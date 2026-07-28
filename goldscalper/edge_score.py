@@ -2,11 +2,21 @@
 factors into a single 0-100 score per direction, gated by an approval
 threshold -- the same idea as the "Edge Score breakdown" panel in the
 GoldScalper Pro reference screenshots.
+
+Scoring is split into two stages so weight tuning is cheap:
+  1. compute_direction_features() -- walks the bars once and records which
+     boolean factors fire (trend aligned, FVG confluence, etc). This does
+     the expensive SMC-zone lookups and depends only on *structural*
+     settings (proximity/lookback/session windows), not on weights.
+  2. score_from_features() -- a vectorized weights-dot-features matmul.
+     Re-scoring with a new weight vector or threshold is just this step,
+     so a weight search doesn't repeat the per-bar lookups per trial.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+import numpy as np
 import pandas as pd
 
 from . import smc
@@ -21,6 +31,8 @@ DEFAULT_WEIGHTS = {
     "round_number": 10,
     "session_timing": 5,
 }  # sums to 100
+
+FACTOR_KEYS = list(DEFAULT_WEIGHTS.keys())
 
 
 @dataclass
@@ -45,13 +57,11 @@ def precompute_smc(df: pd.DataFrame) -> dict:
     }
 
 
-def _score_direction(
+def _bar_factors(
     i: int, direction: str, df: pd.DataFrame, smc_data: dict, cfg: EdgeScoreConfig
-) -> tuple[float, list[tuple[str, float]]]:
-    w = cfg.weights
-    reasons: list[tuple[str, float]] = []
-    score = 0.0
-
+) -> dict[str, tuple[bool, str]]:
+    """Which confluence factors fire for one bar/direction, independent of
+    weights. Returns {factor_key: (is_active, human-readable reason)}."""
     as_of = df.index[i]
     price = float(df["close"].iloc[i])
     atr_val = float(df["atr"].iloc[i]) if pd.notna(df["atr"].iloc[i]) else 0.0
@@ -60,80 +70,127 @@ def _score_direction(
 
     zone_dir = "bullish" if direction == "buy" else "bearish"
     trend_match = 1 if direction == "buy" else -1
+    tol = atr_val * cfg.proximity_atr_mult
+
+    factors: dict[str, tuple[bool, str]] = {}
 
     # 1. Trend alignment
-    if trend_dir == trend_match:
-        score += w["trend_alignment"]
-        reasons.append(("trend aligned (EMA9/21)", w["trend_alignment"]))
-    else:
-        reasons.append(("trend not aligned", 0))
+    factors["trend_alignment"] = (trend_dir == trend_match, "trend aligned (EMA9/21)")
 
     # 2. RSI filter (avoid buying overbought / selling oversold)
     if pd.notna(rsi_val):
-        if direction == "buy" and rsi_val < 70:
-            score += w["rsi_filter"]
-            reasons.append((f"RSI {rsi_val:.1f} not overbought", w["rsi_filter"]))
-        elif direction == "sell" and rsi_val > 30:
-            score += w["rsi_filter"]
-            reasons.append((f"RSI {rsi_val:.1f} not oversold", w["rsi_filter"]))
+        if direction == "buy":
+            factors["rsi_filter"] = (rsi_val < 70, f"RSI {rsi_val:.1f} not overbought")
         else:
-            reasons.append((f"RSI {rsi_val:.1f} against direction", 0))
+            factors["rsi_filter"] = (rsi_val > 30, f"RSI {rsi_val:.1f} not oversold")
+    else:
+        factors["rsi_filter"] = (False, "RSI unavailable")
 
     # 3. Fair value gap confluence
-    tol = atr_val * cfg.proximity_atr_mult
     fvgs = smc.active_zones(smc_data["fvgs"], as_of, direction=zone_dir)
+    near_fvg = False
     if not fvgs.empty:
         near = fvgs[(fvgs["bottom"] - tol <= price) & (fvgs["top"] + tol >= price)]
-        if not near.empty:
-            score += w["fvg_confluence"]
-            reasons.append((f"{zone_dir} FVG confluence", w["fvg_confluence"]))
+        near_fvg = not near.empty
+    factors["fvg_confluence"] = (near_fvg, f"{zone_dir} FVG confluence")
 
     # 4. Order block confluence
     obs = smc.active_zones(smc_data["order_blocks"], as_of, direction=zone_dir)
+    near_ob = False
     if not obs.empty:
         near = obs[(obs["bottom"] - tol <= price) & (obs["top"] + tol >= price)]
-        if not near.empty:
-            score += w["order_block_confluence"]
-            reasons.append((f"{zone_dir} order block confluence", w["order_block_confluence"]))
+        near_ob = not near.empty
+    factors["order_block_confluence"] = (near_ob, f"{zone_dir} order block confluence")
 
     # 5. Liquidity sweep (stop hunt) in the last N bars, matching direction
     sweeps = smc_data["sweeps"]
+    has_sweep = False
     if not sweeps.empty:
-        window = sweeps[(sweeps["at"] <= as_of)]
         recent_idx = df.index.get_indexer([as_of])[0]
         cutoff = df.index[max(0, recent_idx - cfg.event_lookback_bars)]
-        window = window[(window["at"] >= cutoff) & (window["direction"] == zone_dir)]
-        if not window.empty:
-            score += w["liquidity_sweep"]
-            reasons.append((f"{zone_dir} liquidity sweep nearby", w["liquidity_sweep"]))
+        window = sweeps[
+            (sweeps["at"] <= as_of) & (sweeps["at"] >= cutoff) & (sweeps["direction"] == zone_dir)
+        ]
+        has_sweep = not window.empty
+    factors["liquidity_sweep"] = (has_sweep, f"{zone_dir} liquidity sweep nearby")
 
     # 6. Structure break (BOS/CHoCH) in the last N bars, matching direction
     breaks = smc_data["breaks"]
+    has_break = False
+    break_label = "structure break"
     if not breaks.empty:
         recent_idx = df.index.get_indexer([as_of])[0]
         cutoff = df.index[max(0, recent_idx - cfg.event_lookback_bars)]
         window = breaks[
             (breaks["at"] <= as_of) & (breaks["at"] >= cutoff) & (breaks["direction"] == zone_dir)
         ]
-        if not window.empty:
-            label = window.iloc[-1]["type"]
-            score += w["structure_break"]
-            reasons.append((f"{zone_dir} {label}", w["structure_break"]))
+        has_break = not window.empty
+        if has_break:
+            break_label = window.iloc[-1]["type"]
+    factors["structure_break"] = (has_break, f"{zone_dir} {break_label}")
 
     # 7. Round-number proximity (key psychological S/R level)
     nearest_round = round(price / cfg.round_number_step) * cfg.round_number_step
-    if abs(price - nearest_round) <= atr_val * cfg.round_number_tolerance_atr_mult:
-        score += w["round_number"]
-        reasons.append((f"near round number {nearest_round:g}", w["round_number"]))
+    near_round = abs(price - nearest_round) <= atr_val * cfg.round_number_tolerance_atr_mult
+    factors["round_number"] = (near_round, f"near round number {nearest_round:g}")
 
     # 8. Session timing (London/NY overlap = highest-liquidity window)
     hour = as_of.hour
     lo, hi = cfg.session_high_vol_hours
-    if lo <= hour < hi:
-        score += w["session_timing"]
-        reasons.append(("London+NY overlap session", w["session_timing"]))
+    factors["session_timing"] = (lo <= hour < hi, "London+NY overlap session")
 
-    return score, reasons
+    return factors
+
+
+def compute_direction_features(
+    df: pd.DataFrame, smc_data: dict, direction: str, cfg: EdgeScoreConfig | None = None
+) -> pd.DataFrame:
+    """Boolean feature matrix (bars x FACTOR_KEYS) for one direction.
+
+    This is the expensive step (per-bar SMC zone lookups) and is
+    weight-independent -- compute it once per (data, direction) pair and
+    reuse it across an arbitrary number of weight/threshold trials via
+    score_from_features().
+    """
+    cfg = cfg or EdgeScoreConfig()
+    rows = []
+    for i in range(len(df)):
+        factors = _bar_factors(i, direction, df, smc_data, cfg)
+        rows.append({k: v[0] for k, v in factors.items()})
+    return pd.DataFrame(rows, index=df.index, columns=FACTOR_KEYS)
+
+
+def score_from_features(
+    feat_buy: pd.DataFrame, feat_sell: pd.DataFrame, cfg: EdgeScoreConfig
+) -> pd.DataFrame:
+    """Vectorized scoring: weights . features, per bar, for both directions.
+    This is the cheap step -- safe to call many times in a weight search."""
+    w = np.array([cfg.weights[k] for k in FACTOR_KEYS], dtype=float)
+
+    score_buy = feat_buy[FACTOR_KEYS].to_numpy(dtype=float) @ w
+    score_sell = feat_sell[FACTOR_KEYS].to_numpy(dtype=float) @ w
+
+    buy_wins = (score_buy >= cfg.approval_threshold) & (score_buy >= score_sell)
+    sell_wins = (score_sell >= cfg.approval_threshold) & (score_sell > score_buy)
+
+    direction = np.full(len(feat_buy), None, dtype=object)
+    direction[buy_wins] = "buy"
+    direction[sell_wins] = "sell"
+
+    score = np.maximum(score_buy, score_sell)
+    score = np.where(buy_wins, score_buy, np.where(sell_wins, score_sell, score))
+
+    result = pd.DataFrame(
+        {
+            "score_buy": score_buy,
+            "score_sell": score_sell,
+            "direction": direction,
+            "score": score,
+        },
+        index=feat_buy.index,
+    )
+    result["approved"] = result["direction"].notna()
+    return result
 
 
 def compute_edge_scores(
@@ -143,39 +200,18 @@ def compute_edge_scores(
 
     Requires df to already have indicators from indicators.add_base_indicators.
     `smc_data` (from precompute_smc) can be passed in and reused across many
-    calls with different weights/thresholds -- SMC event detection doesn't
-    depend on cfg, so a weight sweep should precompute it once. Returns a
-    DataFrame aligned to df's index with columns:
+    calls. For scoring the *same* structural cfg against many different
+    weight vectors (a tuning search), prefer computing features once via
+    compute_direction_features() and calling score_from_features() directly.
+    Returns a DataFrame aligned to df's index with columns:
     score_buy, score_sell, direction ('buy'/'sell'/None), score, approved (bool)
     """
     cfg = cfg or EdgeScoreConfig()
     smc_data = smc_data if smc_data is not None else precompute_smc(df)
 
-    warmup = df[["ema_9", "ema_21", "rsi", "atr"]].isna().any(axis=1)
-    first_valid = warmup[~warmup].index.min() if (~warmup).any() else None
-
-    rows = []
-    for i in range(len(df)):
-        if first_valid is not None and df.index[i] < first_valid:
-            rows.append({"score_buy": 0.0, "score_sell": 0.0, "direction": None, "score": 0.0})
-            continue
-        buy_score, _ = _score_direction(i, "buy", df, smc_data, cfg)
-        sell_score, _ = _score_direction(i, "sell", df, smc_data, cfg)
-
-        if buy_score >= cfg.approval_threshold and buy_score >= sell_score:
-            direction, score = "buy", buy_score
-        elif sell_score >= cfg.approval_threshold and sell_score > buy_score:
-            direction, score = "sell", sell_score
-        else:
-            direction, score = None, max(buy_score, sell_score)
-
-        rows.append(
-            {"score_buy": buy_score, "score_sell": sell_score, "direction": direction, "score": score}
-        )
-
-    result = pd.DataFrame(rows, index=df.index)
-    result["approved"] = result["direction"].notna()
-    return result
+    feat_buy = compute_direction_features(df, smc_data, "buy", cfg)
+    feat_sell = compute_direction_features(df, smc_data, "sell", cfg)
+    return score_from_features(feat_buy, feat_sell, cfg)
 
 
 def explain(i: int, direction: str, df: pd.DataFrame, smc_data: dict, cfg: EdgeScoreConfig | None = None):
@@ -183,4 +219,11 @@ def explain(i: int, direction: str, df: pd.DataFrame, smc_data: dict, cfg: EdgeS
     breakdowns, mirroring the 'Edge Score Breakdown' panel in the reference UI.
     """
     cfg = cfg or EdgeScoreConfig()
-    return _score_direction(i, direction, df, smc_data, cfg)
+    factors = _bar_factors(i, direction, df, smc_data, cfg)
+    score = 0.0
+    reasons = []
+    for key, (active, label) in factors.items():
+        points = cfg.weights[key] if active else 0
+        score += points
+        reasons.append((label if active else f"{label} (not met)", points))
+    return score, reasons

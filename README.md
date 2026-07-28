@@ -24,10 +24,12 @@ goldscalper/
   edge_score.py  # weighted 0-100 confluence score + approval threshold
   backtest.py    # event-driven backtester (ATR SL/TP, fixed-fractional risk sizing)
   report.py      # stats (win rate, profit factor, drawdown, Sharpe) + charts
+  tune.py        # randomized Edge Score weight/threshold search w/ train-test split
 scripts/
-  run_backtest.py  # CLI entry point
+  run_backtest.py    # CLI entry point for a single backtest run
+  tune_edge_score.py # CLI entry point for the weight search
 data/    # put historical OHLCV CSVs here (gitignored)
-reports/ # generated trade logs + equity curve charts (gitignored)
+reports/ # generated trade logs, equity curve charts, tuning results (gitignored)
 ```
 
 ### Usage
@@ -40,11 +42,29 @@ python scripts/run_backtest.py --synthetic --bars 4000
 
 # Run on real historical data exported from MT4/MT5:
 python scripts/run_backtest.py --csv data/xauusd_h1.csv
+
+# Search for better Edge Score weights + threshold (once you have real data):
+python scripts/tune_edge_score.py --csv data/xauusd_h1.csv --trials 300
 ```
 
 The CSV loader expects an MT4/MT5-style export with either a `datetime`
 column or separate `date`/`time` columns, plus `open`, `high`, `low`,
 `close`, `volume` (column names are matched case-insensitively).
+
+### Weight tuning
+
+`tune_edge_score.py` runs a randomized search over the Edge Score weights
+and approval threshold, using a chronological (no-shuffle) train/test split
+so a config that only worked on in-sample noise gets flagged rather than
+handed back as a "winner" — it ranks candidates on the train segment, then
+re-evaluates the top few out-of-sample and warns when a candidate's
+performance collapses on the test segment (that's overfitting, not edge).
+Per-bar SMC feature lookups are computed once per segment and reused across
+all trials, so hundreds of trials stay fast even on a few years of data.
+
+Run it against `--synthetic` data and it will only validate that the search
+machinery works — since that data is a random walk, "tuned" weights on it
+are fitting noise. Point it at a real `--csv` before trusting any output.
 
 ### Notes
 

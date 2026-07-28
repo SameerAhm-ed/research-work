@@ -16,10 +16,17 @@ import numpy as np
 import pandas as pd
 
 from .backtest import BacktestConfig, run_backtest
-from .edge_score import DEFAULT_WEIGHTS, EdgeScoreConfig, compute_edge_scores, precompute_smc
+from .edge_score import (
+    DEFAULT_WEIGHTS,
+    FACTOR_KEYS,
+    EdgeScoreConfig,
+    compute_direction_features,
+    precompute_smc,
+    score_from_features,
+)
 from .report import compute_stats
 
-WEIGHT_KEYS = list(DEFAULT_WEIGHTS.keys())
+WEIGHT_KEYS = FACTOR_KEYS
 
 
 @dataclass
@@ -63,8 +70,14 @@ def objective(stats: dict, min_trades: int) -> float:
     return stats["return_pct"] / dd
 
 
-def _evaluate(df_segment: pd.DataFrame, smc_data: dict, cfg: EdgeScoreConfig, tcfg: TuneConfig) -> dict:
-    scores = compute_edge_scores(df_segment, cfg, smc_data=smc_data)
+def _evaluate_from_features(
+    df_segment: pd.DataFrame,
+    feat_buy: pd.DataFrame,
+    feat_sell: pd.DataFrame,
+    cfg: EdgeScoreConfig,
+    tcfg: TuneConfig,
+) -> dict:
+    scores = score_from_features(feat_buy, feat_sell, cfg)
     bt_cfg = BacktestConfig(starting_equity=tcfg.starting_equity, risk_pct=tcfg.risk_pct)
     trades, equity = run_backtest(df_segment, scores, bt_cfg)
     return compute_stats(trades, equity, tcfg.starting_equity)
@@ -73,10 +86,14 @@ def _evaluate(df_segment: pd.DataFrame, smc_data: dict, cfg: EdgeScoreConfig, tc
 def search(df: pd.DataFrame, tcfg: TuneConfig | None = None, top_n: int = 5) -> pd.DataFrame:
     """Randomized search over Edge Score weights + approval threshold.
 
-    df must already have indicators (indicators.add_base_indicators). Scores
-    each candidate on a chronological train split, ranks by the objective,
-    then re-evaluates the top `top_n` candidates on the held-out test split
-    so you can see whether the "winner" actually generalizes.
+    df must already have indicators (indicators.add_base_indicators). The
+    expensive per-bar SMC feature lookups are computed exactly once per
+    split (train/test x buy/sell); every trial after that is just a
+    weights-dot-features matmul, so hundreds of trials stay fast even on
+    years of real data. Scores each candidate on a chronological train
+    split, ranks by the objective, then re-evaluates the top `top_n`
+    candidates on the held-out test split so you can see whether the
+    "winner" actually generalizes.
 
     Returns a DataFrame of the top_n candidates with both train and test
     stats, sorted by train objective descending.
@@ -88,13 +105,21 @@ def search(df: pd.DataFrame, tcfg: TuneConfig | None = None, top_n: int = 5) -> 
     train_smc = precompute_smc(train_df)
     test_smc = precompute_smc(test_df)
 
+    # Structural cfg (proximity/lookback/session settings) is fixed for this
+    # search -- only weights + threshold vary -- so features are computed once.
+    structural_cfg = EdgeScoreConfig()
+    train_feat_buy = compute_direction_features(train_df, train_smc, "buy", structural_cfg)
+    train_feat_sell = compute_direction_features(train_df, train_smc, "sell", structural_cfg)
+    test_feat_buy = compute_direction_features(test_df, test_smc, "buy", structural_cfg)
+    test_feat_sell = compute_direction_features(test_df, test_smc, "sell", structural_cfg)
+
     candidates = []
     for _ in range(tcfg.n_trials):
         weights = sample_weights(rng, tcfg.total_score_budget)
         threshold = float(rng.uniform(*tcfg.threshold_range))
         cfg = EdgeScoreConfig(weights=weights, approval_threshold=threshold)
 
-        train_stats = _evaluate(train_df, train_smc, cfg, tcfg)
+        train_stats = _evaluate_from_features(train_df, train_feat_buy, train_feat_sell, cfg, tcfg)
         train_obj = objective(train_stats, tcfg.min_trades)
 
         candidates.append({"cfg": cfg, "train_obj": train_obj, "train_stats": train_stats})
@@ -105,7 +130,7 @@ def search(df: pd.DataFrame, tcfg: TuneConfig | None = None, top_n: int = 5) -> 
     rows = []
     for c in top:
         cfg = c["cfg"]
-        test_stats = _evaluate(test_df, test_smc, cfg, tcfg)
+        test_stats = _evaluate_from_features(test_df, test_feat_buy, test_feat_sell, cfg, tcfg)
         test_obj = objective(test_stats, tcfg.min_trades)
         row = {
             "threshold": round(cfg.approval_threshold, 1),
