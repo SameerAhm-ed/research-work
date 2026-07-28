@@ -136,15 +136,20 @@ def _score_direction(
     return score, reasons
 
 
-def compute_edge_scores(df: pd.DataFrame, cfg: EdgeScoreConfig | None = None) -> pd.DataFrame:
+def compute_edge_scores(
+    df: pd.DataFrame, cfg: EdgeScoreConfig | None = None, smc_data: dict | None = None
+) -> pd.DataFrame:
     """Compute per-bar buy/sell Edge Scores and the approved direction (if any).
 
     Requires df to already have indicators from indicators.add_base_indicators.
-    Returns a DataFrame aligned to df's index with columns:
+    `smc_data` (from precompute_smc) can be passed in and reused across many
+    calls with different weights/thresholds -- SMC event detection doesn't
+    depend on cfg, so a weight sweep should precompute it once. Returns a
+    DataFrame aligned to df's index with columns:
     score_buy, score_sell, direction ('buy'/'sell'/None), score, approved (bool)
     """
     cfg = cfg or EdgeScoreConfig()
-    smc_data = precompute_smc(df)
+    smc_data = smc_data if smc_data is not None else precompute_smc(df)
 
     warmup = df[["ema_9", "ema_21", "rsi", "atr"]].isna().any(axis=1)
     first_valid = warmup[~warmup].index.min() if (~warmup).any() else None
