@@ -64,9 +64,22 @@ class TuneConfig:
     # tune_trailing=True (forces trailing_stop_enabled=True for every
     # trial in this search -- it's a dedicated "does trailing help" run,
     # not a per-trial coin flip).
+    #
+    # trailing_distance_atr_mult_range's floor matters: on GOLD H1, a
+    # single bar's own range averages ~1x ATR (they're the same
+    # statistic, almost by definition), so a trailing distance anywhere
+    # near 1x ATR sits inside one bar's ordinary noise -- the H1 backtest
+    # can't tell "stopped out mid-bar" from "rode to the bar's extreme,
+    # then stopped" and silently assumes the latter (optimistic) case.
+    # Verified via M1 replay: a search that found a 0.51x-ATR distance
+    # overstated realized PnL by ~65% on real intrabar data; widening the
+    # floor to 1.5x eliminated the discrepancy (largest single-trade error
+    # dropped from ~$50 to ~$4.50). Don't lower this floor without
+    # re-verifying against real sub-H1 data for whatever instrument this
+    # is searching.
     tune_trailing: bool = False
     trailing_activation_atr_mult_range: tuple = (0.5, 3.0)
-    trailing_distance_atr_mult_range: tuple = (0.5, 3.0)
+    trailing_distance_atr_mult_range: tuple = (1.5, 4.0)
     # Volatility regime filter, searched jointly when tune_vol_filter=True
     # (forces vol_filter_enabled=True for every trial in this search).
     # vol_lookback is fixed, not searched -- one more free dimension isn't
