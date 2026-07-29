@@ -13,6 +13,59 @@ from __future__ import annotations
 from .backtest import BacktestConfig
 from .edge_score import EdgeScoreConfig
 
+# EURUSD generalization check: an independent search (own random seed, own
+# 85/15 dev/holdout split) on a completely different instrument, anchored
+# on the same trend-following hypothesis. Found the same weight signature
+# GOLD did (moderate-high trend_alignment + round_number + session_timing,
+# low structure_break) without being told to. Full 2020-01 - 2026-07
+# dataset: 716 trades, 82.8% win rate, profit factor 1.35, Sharpe 1.17, max
+# drawdown -5.09%, +55.45% return. Holdout year: profit factor 1.20,
+# Sharpe 0.69, max DD -3.82%, +3.32% return -- smaller numbers than gold
+# (EURUSD is a much lower-volatility instrument) but positive and
+# consistent with the full-history result. Requires "trend_h4" column
+# (mtf.add_multi_timeframe_trend) AND EURUSD-scale structural settings
+# (5-digit quoting) -- see EURUSD_BACKTEST_CONFIG.point_size and
+# EURUSD_EDGE_CONFIG.round_number_step below, which differ from GOLD's.
+EURUSD_WEIGHTS = {
+    "trend_alignment": 16,
+    "rsi_filter": 3,
+    "fvg_confluence": 6,
+    "order_block_confluence": 12,
+    "liquidity_sweep": 19,
+    "structure_break": 7,
+    "round_number": 16,
+    "session_timing": 21,
+}
+
+EURUSD_EDGE_CONFIG = EdgeScoreConfig(
+    weights=EURUSD_WEIGHTS,
+    approval_threshold=57.0,
+    require_htf_trend=("trend_h4",),
+    round_number_step=0.01,
+    round_number_tolerance_atr_mult=0.5,
+)
+
+EURUSD_BACKTEST_CONFIG = BacktestConfig(
+    sl_atr_mult=4.19,
+    tp_atr_mult=6.27,
+    trailing_stop_enabled=True,
+    trailing_activation_atr_mult=0.94,
+    trailing_distance_atr_mult=0.48,
+    point_size=0.00001,
+)
+
+EURUSD_MTF_RULES = {"trend_h4": "4h"}
+
+# Combining GOLD (TREND_HTF_*) and EURUSD (EURUSD_*) into one portfolio,
+# each at its normal full risk_pct on its own half of total capital
+# (see goldscalper/portfolio.py), measurably reduces drawdown versus
+# either alone -- the combined drawdown (-3.99%) is *shallower* than
+# GOLD alone's -7.63% while retaining ~60% of the return (159.4% vs
+# 263.3%, on the same total capital). This is genuine diversification:
+# the combined worst case is better than a simple average of the two
+# legs' individual worst cases, because their bad stretches don't
+# fully overlap in time. See PROJECT_LOG.md Round 11.
+
 # ACTIVE preset (chosen 2026-07-29): trend-following + H4 trend
 # confirmation gate. Weights/SL/TP/trailing were re-searched with the H4
 # gate active throughout (not bolted onto a config tuned without it --
