@@ -39,6 +39,15 @@ class TuneConfig:
     total_score_budget: float = 100.0
     seed: int = 42
     starting_equity: float = 10_000.0
+    # Instrument-scale structural settings -- must match the instrument
+    # being searched (defaults are GOLD-scale: $10 round levels, 2-digit
+    # quoting). E.g. for EURUSD (5-digit quoting, price ~1.1): round_number
+    # _step=0.01, point_size=0.00001. Getting these wrong doesn't error,
+    # it just silently checks proximity to the wrong price levels and
+    # miscalculates spread cost -- both structural, not searched.
+    round_number_step: float = 10.0
+    round_number_tolerance_atr_mult: float = 0.5
+    point_size: float = 0.01
     # risk_pct is deliberately NOT searched: doubling it roughly doubles
     # both PnL and drawdown in dollar terms, so return% and drawdown% (and
     # therefore the return/drawdown objective) stay about the same -- it's
@@ -176,7 +185,10 @@ def search(df: pd.DataFrame, tcfg: TuneConfig | None = None, top_n: int = 5) -> 
     smc_data = precompute_smc(df)
     # Structural cfg (proximity/lookback/session settings) is fixed for this
     # search -- only weights + threshold vary -- so features are computed once.
-    structural_cfg = EdgeScoreConfig()
+    structural_cfg = EdgeScoreConfig(
+        round_number_step=tcfg.round_number_step,
+        round_number_tolerance_atr_mult=tcfg.round_number_tolerance_atr_mult,
+    )
     feat_buy = compute_direction_features(df, smc_data, "buy", structural_cfg)
     feat_sell = compute_direction_features(df, smc_data, "sell", structural_cfg)
 
@@ -197,7 +209,13 @@ def search(df: pd.DataFrame, tcfg: TuneConfig | None = None, top_n: int = 5) -> 
         # exactly 70). Sampling the threshold as an integer too removes
         # that knife-edge fragility instead of just papering over it.
         threshold = float(rng.integers(int(tcfg.threshold_range[0]), int(tcfg.threshold_range[1]) + 1))
-        cfg = EdgeScoreConfig(weights=weights, approval_threshold=threshold, require_htf_trend=tcfg.require_htf_trend)
+        cfg = EdgeScoreConfig(
+            weights=weights,
+            approval_threshold=threshold,
+            require_htf_trend=tcfg.require_htf_trend,
+            round_number_step=tcfg.round_number_step,
+            round_number_tolerance_atr_mult=tcfg.round_number_tolerance_atr_mult,
+        )
 
         if tcfg.tune_sl_tp:
             sl_mult = float(rng.uniform(*tcfg.sl_atr_mult_range))
@@ -235,6 +253,7 @@ def search(df: pd.DataFrame, tcfg: TuneConfig | None = None, top_n: int = 5) -> 
             vol_ratio_max=vol_ratio_max,
             vol_reduction_mult=vol_reduction,
             vol_lookback=tcfg.vol_lookback,
+            point_size=tcfg.point_size,
         )
 
         scores = score_from_features(feat_buy, feat_sell, cfg, df)
