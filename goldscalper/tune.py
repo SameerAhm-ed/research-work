@@ -66,6 +66,11 @@ class TuneConfig:
     vol_ratio_max_range: tuple = (1.1, 2.5)
     vol_reduction_mult_range: tuple = (0.2, 0.8)
     vol_lookback: int = 100
+    # Multi-timeframe trend gate: fixed for the whole search (not sampled
+    # per-trial -- it's a structural on/off decision, like tune_sl_tp),
+    # e.g. ("trend_h4",) or ("trend_h4","trend_d1"). df passed to search()
+    # must already have these columns (mtf.add_multi_timeframe_trend).
+    require_htf_trend: tuple = ()
     # Optional focused-search bias: sample weight vectors clustered around
     # `anchor_weights` (a dict like DEFAULT_WEIGHTS) instead of uniformly
     # over the whole simplex. `concentration` controls how tight the
@@ -192,7 +197,7 @@ def search(df: pd.DataFrame, tcfg: TuneConfig | None = None, top_n: int = 5) -> 
         # exactly 70). Sampling the threshold as an integer too removes
         # that knife-edge fragility instead of just papering over it.
         threshold = float(rng.integers(int(tcfg.threshold_range[0]), int(tcfg.threshold_range[1]) + 1))
-        cfg = EdgeScoreConfig(weights=weights, approval_threshold=threshold)
+        cfg = EdgeScoreConfig(weights=weights, approval_threshold=threshold, require_htf_trend=tcfg.require_htf_trend)
 
         if tcfg.tune_sl_tp:
             sl_mult = float(rng.uniform(*tcfg.sl_atr_mult_range))
@@ -232,7 +237,7 @@ def search(df: pd.DataFrame, tcfg: TuneConfig | None = None, top_n: int = 5) -> 
             vol_lookback=tcfg.vol_lookback,
         )
 
-        scores = score_from_features(feat_buy, feat_sell, cfg)
+        scores = score_from_features(feat_buy, feat_sell, cfg, df)
         train_objs = [
             objective(_fold_stats(df, scores, train_sl, bt_cfg, tcfg.starting_equity), tcfg.min_trades)
             for train_sl, _ in folds
@@ -247,7 +252,7 @@ def search(df: pd.DataFrame, tcfg: TuneConfig | None = None, top_n: int = 5) -> 
     for c in top:
         cfg = c["cfg"]
         bt_cfg = c["bt_cfg"]
-        scores = score_from_features(feat_buy, feat_sell, cfg)
+        scores = score_from_features(feat_buy, feat_sell, cfg, df)
 
         test_objs, test_trades, test_returns, test_dds = [], [], [], []
         for _, test_sl in folds:

@@ -5,6 +5,29 @@ reasoning behind decisions doesn't get lost. Newest entries at the top.
 
 ---
 
+## Round 8: MTF confirmation, properly re-optimized -- a real trade-off, not a win
+
+**Follow-up to Round 7's caveat.** Re-ran the full weights+SL/TP+trailing
+search with the H4 gate active in every trial (not bolted on after the
+fact), so everything else could re-adapt to the smaller, filtered trade
+set. This time the top candidates held up much better under scrutiny:
+checked against the full continuous 6.5-year history (not just the
+holdout), the best one had *higher* Sharpe (2.27 vs the current preset's
+2.18) and substantially higher return (+263% vs +197%) -- but also worse
+drawdown (-7.63% vs -5.71%).
+
+**Not adopted, on purpose.** This isn't a Round 6/7 situation (a good
+holdout number hiding a worse full-history reality) -- the full-history
+numbers here are genuinely better on two of three axes. But drawdown is
+the one thing prioritized explicitly and repeatedly throughout this
+project (it's the reason Direction B was chosen over Direction A back in
+Round 2), so trading it away for more return isn't a decision to make
+unilaterally. Logged as a real, validated alternative -- higher
+return/Sharpe for worse drawdown -- in case that trade-off becomes
+preferable later.
+
+---
+
 ## Round 7: multi-timeframe confirmation, bolted on -- doesn't help as tested
 
 **Negative result, logged honestly.** Built H4/D1 trend confirmation
