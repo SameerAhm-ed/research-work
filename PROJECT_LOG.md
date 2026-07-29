@@ -5,6 +5,37 @@ reasoning behind decisions doesn't get lost. Newest entries at the top.
 
 ---
 
+## Round 13: paper-trading infrastructure built (GOLD only, trend_htf)
+
+Moved from pure backtesting to live-adjacent infrastructure. Chose GOLD
+alone first (not the GOLD+EURUSD combined portfolio) to keep the first
+real-world setup simple to debug -- EURUSD can be added the same way
+once this is confirmed working.
+
+Built a file-bridge architecture (same pattern as the original
+inspiration for this whole project): `scripts/live_signal_generator.py`
+runs on the user's Windows machine (this sandbox has no live market
+data access), pulls fresh H1 bars via the MetaTrader5 Python package,
+and runs them through the *exact same* goldscalper pipeline already
+validated in backtesting -- no strategy logic duplicated or
+reimplemented. Approved signals are written as plain price-unit offsets
+(SL/TP/trailing, derived from ATR at signal time) to a CSV file.
+`mt_scripts/GoldScalperLiveEA.mq5` watches that file and handles
+execution only: opens the trade, sizes it by fixed-fractional risk
+against real account equity, and manages the trailing stop tick-by-tick
+(more precise than even the M1 validation, since it's the live broker
+feed). The EA has no strategy logic of its own by design.
+
+**Not live-tested** -- this environment can't reach a live MT5
+connection to test that part. Verified everything that could be
+verified from here: Python syntax, presets resolving correctly, and the
+core signal-computation path running correctly end-to-end using real
+historical data as a stand-in for the live feed. PAPER_TRADING_SETUP.md
+has a dry-run mode to build confidence before it's trusted with even
+demo trades.
+
+---
+
 ## Round 12: the biggest mistake caught in this project -- and the fix
 
 **Mistake, caught properly before real money was ever at stake.** Got a
