@@ -182,7 +182,16 @@ def search(df: pd.DataFrame, tcfg: TuneConfig | None = None, top_n: int = 5) -> 
     candidates = []
     for _ in range(tcfg.n_trials):
         weights = sample_weights(rng, tcfg.total_score_budget, tcfg.anchor_weights, tcfg.concentration)
-        threshold = float(rng.uniform(*tcfg.threshold_range))
+        # Weights are always whole integers (see sample_weights), so
+        # achievable scores are sums of a subset of them -- a small
+        # discrete set, not a continuum. A continuous-valued threshold can
+        # land a fraction of a point from one of those achievable sums,
+        # making "approved" flip on essentially arbitrary precision (found
+        # the hard way: threshold=70.02 vs 70.00 nearly doubled the trade
+        # count because these particular weights have a subset summing to
+        # exactly 70). Sampling the threshold as an integer too removes
+        # that knife-edge fragility instead of just papering over it.
+        threshold = float(rng.integers(int(tcfg.threshold_range[0]), int(tcfg.threshold_range[1]) + 1))
         cfg = EdgeScoreConfig(weights=weights, approval_threshold=threshold)
 
         if tcfg.tune_sl_tp:
