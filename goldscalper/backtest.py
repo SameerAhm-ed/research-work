@@ -24,6 +24,8 @@ class BacktestConfig:
     sl_atr_mult: float = 2.0
     tp_atr_mult: float = 2.5
     max_concurrent_positions: int = 1  # only 1 supported in this version
+    point_size: float = 0.01  # price per broker "point" (e.g. GOLD: 2 digits -> 0.01)
+    use_spread_costs: bool = True  # charge the historical spread if df has one
 
 
 def run_backtest(df: pd.DataFrame, scores: pd.DataFrame, cfg: BacktestConfig | None = None):
@@ -41,6 +43,11 @@ def run_backtest(df: pd.DataFrame, scores: pd.DataFrame, cfg: BacktestConfig | N
     high = df["high"].to_numpy(dtype=float)
     low = df["low"].to_numpy(dtype=float)
     atr_arr = df["atr"].to_numpy(dtype=float)
+
+    if cfg.use_spread_costs and "spread" in df.columns:
+        spread_price = df["spread"].to_numpy(dtype=float) * cfg.point_size
+    else:
+        spread_price = np.zeros(n, dtype=float)
 
     approved = scores["approved"].to_numpy(dtype=bool)
     direction_arr = scores["direction"].to_numpy()
@@ -67,11 +74,15 @@ def run_backtest(df: pd.DataFrame, scores: pd.DataFrame, cfg: BacktestConfig | N
     for i in range(n):
         date = idx[i]
 
-        # 1. Fill any pending signal at this bar's open
+        # 1. Fill any pending signal at this bar's open. OHLC is bid-basis
+        # (standard for MT4/5 exports): a buy fills at the ask (bid+spread),
+        # a sell fills at the bid directly -- so the spread cost is charged
+        # once per trade, on whichever leg is the "buy" (entry for a long,
+        # exit for a short).
         if has_pending and not has_position:
             direction = pending_direction
             atr_val = pending_atr
-            entry_price = open_[i]
+            entry_price = open_[i] + spread_price[i] if direction == "buy" else open_[i]
 
             if atr_val and atr_val > 0:
                 if direction == "buy":
@@ -119,6 +130,8 @@ def run_backtest(df: pd.DataFrame, scores: pd.DataFrame, cfg: BacktestConfig | N
                 if pos_direction == "buy":
                     pnl = (exit_price - pos_entry_price) * pos_units
                 else:
+                    # Closing a short buys back at the ask.
+                    exit_price = exit_price + spread_price[i]
                     pnl = (pos_entry_price - exit_price) * pos_units
                 equity += pnl
                 trades.append(

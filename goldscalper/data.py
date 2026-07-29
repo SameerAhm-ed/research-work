@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 
 REQUIRED_COLUMNS = ["open", "high", "low", "close", "volume"]
+OPTIONAL_COLUMNS = ["spread"]  # in broker points, used for transaction-cost modeling
 
 
 def load_csv(path: str) -> pd.DataFrame:
@@ -17,7 +18,9 @@ def load_csv(path: str) -> pd.DataFrame:
     "date"+"time" columns, and either "volume" or "tickvol"/"vol" for
     volume (tick volume is used when real volume is all zero, which is
     normal for OTC gold/forex CFDs). Returns a DataFrame indexed by
-    timestamp with lowercase columns: open, high, low, close, volume.
+    timestamp with lowercase columns: open, high, low, close, volume, and
+    spread (in broker points) when the source file provides it -- the
+    backtester uses spread for transaction-cost modeling if present.
     """
     df = pd.read_csv(path, sep=None, engine="python")
     df.columns = [c.strip().lower().strip("<>") for c in df.columns]
@@ -46,7 +49,8 @@ def load_csv(path: str) -> pd.DataFrame:
     if missing:
         raise ValueError(f"CSV is missing required columns: {missing}")
 
-    df = df[REQUIRED_COLUMNS].astype(float)
+    keep = REQUIRED_COLUMNS + [c for c in OPTIONAL_COLUMNS if c in df.columns]
+    df = df[keep].astype(float)
     df = df.sort_index()
     df = df[~df.index.duplicated(keep="last")]
     return df
