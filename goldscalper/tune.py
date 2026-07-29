@@ -39,7 +39,18 @@ class TuneConfig:
     total_score_budget: float = 100.0
     seed: int = 42
     starting_equity: float = 10_000.0
+    # risk_pct is deliberately NOT searched: doubling it roughly doubles
+    # both PnL and drawdown in dollar terms, so return% and drawdown% (and
+    # therefore the return/drawdown objective) stay about the same -- it's
+    # a leverage dial, not something that changes the strategy's shape. Set
+    # it after picking a config, based on how much drawdown you can accept.
     risk_pct: float = 0.01
+    # SL/TP *do* change the strategy's shape (win rate, whipsaw exits, how
+    # far winners are allowed to run) -- searched jointly with the weights
+    # when tune_sl_tp=True.
+    tune_sl_tp: bool = False
+    sl_atr_mult_range: tuple = (1.0, 4.0)
+    tp_atr_mult_range: tuple = (1.5, 6.0)
     # Optional focused-search bias: sample weight vectors clustered around
     # `anchor_weights` (a dict like DEFAULT_WEIGHTS) instead of uniformly
     # over the whole simplex. `concentration` controls how tight the
@@ -111,11 +122,10 @@ def objective(stats: dict, min_trades: int) -> float:
 
 
 def _fold_stats(
-    df: pd.DataFrame, scores: pd.DataFrame, sl: slice, tcfg: TuneConfig
+    df: pd.DataFrame, scores: pd.DataFrame, sl: slice, bt_cfg: BacktestConfig, starting_equity: float
 ) -> dict:
-    bt_cfg = BacktestConfig(starting_equity=tcfg.starting_equity, risk_pct=tcfg.risk_pct)
     trades, equity = run_backtest(df.iloc[sl], scores.iloc[sl], bt_cfg)
-    return compute_stats(trades, equity, tcfg.starting_equity)
+    return compute_stats(trades, equity, starting_equity)
 
 
 def search(df: pd.DataFrame, tcfg: TuneConfig | None = None, top_n: int = 5) -> pd.DataFrame:
@@ -160,13 +170,25 @@ def search(df: pd.DataFrame, tcfg: TuneConfig | None = None, top_n: int = 5) -> 
         threshold = float(rng.uniform(*tcfg.threshold_range))
         cfg = EdgeScoreConfig(weights=weights, approval_threshold=threshold)
 
+        if tcfg.tune_sl_tp:
+            sl_mult = float(rng.uniform(*tcfg.sl_atr_mult_range))
+            tp_mult = float(rng.uniform(*tcfg.tp_atr_mult_range))
+        else:
+            sl_mult, tp_mult = BacktestConfig().sl_atr_mult, BacktestConfig().tp_atr_mult
+        bt_cfg = BacktestConfig(
+            starting_equity=tcfg.starting_equity,
+            risk_pct=tcfg.risk_pct,
+            sl_atr_mult=sl_mult,
+            tp_atr_mult=tp_mult,
+        )
+
         scores = score_from_features(feat_buy, feat_sell, cfg)
         train_objs = [
-            objective(_fold_stats(df, scores, train_sl, tcfg), tcfg.min_trades)
+            objective(_fold_stats(df, scores, train_sl, bt_cfg, tcfg.starting_equity), tcfg.min_trades)
             for train_sl, _ in folds
         ]
         avg_train_obj = float(np.mean(train_objs))
-        candidates.append({"cfg": cfg, "avg_train_obj": avg_train_obj})
+        candidates.append({"cfg": cfg, "bt_cfg": bt_cfg, "avg_train_obj": avg_train_obj})
 
     candidates.sort(key=lambda c: c["avg_train_obj"], reverse=True)
     top = candidates[:top_n]
@@ -174,11 +196,12 @@ def search(df: pd.DataFrame, tcfg: TuneConfig | None = None, top_n: int = 5) -> 
     rows = []
     for c in top:
         cfg = c["cfg"]
+        bt_cfg = c["bt_cfg"]
         scores = score_from_features(feat_buy, feat_sell, cfg)
 
         test_objs, test_trades, test_returns, test_dds = [], [], [], []
         for _, test_sl in folds:
-            stats = _fold_stats(df, scores, test_sl, tcfg)
+            stats = _fold_stats(df, scores, test_sl, bt_cfg, tcfg.starting_equity)
             test_objs.append(objective(stats, tcfg.min_trades))
             test_trades.append(stats["n_trades"])
             test_returns.append(stats["return_pct"])
@@ -187,6 +210,8 @@ def search(df: pd.DataFrame, tcfg: TuneConfig | None = None, top_n: int = 5) -> 
         rows.append(
             {
                 "threshold": round(cfg.approval_threshold, 1),
+                "sl_atr_mult": round(bt_cfg.sl_atr_mult, 2),
+                "tp_atr_mult": round(bt_cfg.tp_atr_mult, 2),
                 **{f"w_{k}": v for k, v in cfg.weights.items()},
                 "avg_train_obj": round(c["avg_train_obj"], 3),
                 "avg_test_obj": round(float(np.mean(test_objs)), 3),

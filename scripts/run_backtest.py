@@ -18,6 +18,7 @@ from goldscalper.data import generate_synthetic, load_csv
 from goldscalper.edge_score import EdgeScoreConfig, compute_edge_scores
 from goldscalper.indicators import add_base_indicators
 from goldscalper.report import compute_stats, plot_report, print_summary
+from goldscalper import presets
 
 
 def main() -> None:
@@ -25,6 +26,11 @@ def main() -> None:
     parser.add_argument("--csv", type=str, help="Path to a historical OHLCV CSV export")
     parser.add_argument("--synthetic", action="store_true", help="Use generated synthetic data")
     parser.add_argument("--bars", type=int, default=3000, help="Bars for synthetic data")
+    parser.add_argument(
+        "--preset",
+        choices=["trend_low_dd"],
+        help="Use a validated preset config instead of --threshold/defaults (see goldscalper/presets.py)",
+    )
     parser.add_argument("--threshold", type=float, default=70.0, help="Edge Score approval threshold")
     parser.add_argument("--risk-pct", type=float, default=0.01, help="Fraction of equity risked per trade")
     parser.add_argument("--out-dir", type=str, default="reports", help="Output directory for report files")
@@ -42,10 +48,19 @@ def main() -> None:
 
     df = add_base_indicators(df)
 
-    edge_cfg = EdgeScoreConfig(approval_threshold=args.threshold)
-    scores = compute_edge_scores(df, edge_cfg)
+    if args.preset == "trend_low_dd":
+        edge_cfg = presets.TREND_LOW_DRAWDOWN_EDGE_CONFIG
+        bt_cfg = BacktestConfig(
+            risk_pct=args.risk_pct,
+            sl_atr_mult=presets.TREND_LOW_DRAWDOWN_BACKTEST_CONFIG.sl_atr_mult,
+            tp_atr_mult=presets.TREND_LOW_DRAWDOWN_BACKTEST_CONFIG.tp_atr_mult,
+        )
+        print("Using preset: trend_low_dd (see goldscalper/presets.py for validation notes)")
+    else:
+        edge_cfg = EdgeScoreConfig(approval_threshold=args.threshold)
+        bt_cfg = BacktestConfig(risk_pct=args.risk_pct)
 
-    bt_cfg = BacktestConfig(risk_pct=args.risk_pct)
+    scores = compute_edge_scores(df, edge_cfg)
     trades, equity = run_backtest(df, scores, bt_cfg)
 
     stats = compute_stats(trades, equity, bt_cfg.starting_equity)
