@@ -58,6 +58,14 @@ class TuneConfig:
     tune_trailing: bool = False
     trailing_activation_atr_mult_range: tuple = (0.5, 3.0)
     trailing_distance_atr_mult_range: tuple = (0.5, 3.0)
+    # Volatility regime filter, searched jointly when tune_vol_filter=True
+    # (forces vol_filter_enabled=True for every trial in this search).
+    # vol_lookback is fixed, not searched -- one more free dimension isn't
+    # worth it for a parameter this insensitive.
+    tune_vol_filter: bool = False
+    vol_ratio_max_range: tuple = (1.1, 2.5)
+    vol_reduction_mult_range: tuple = (0.2, 0.8)
+    vol_lookback: int = 100
     # Optional focused-search bias: sample weight vectors clustered around
     # `anchor_weights` (a dict like DEFAULT_WEIGHTS) instead of uniformly
     # over the whole simplex. `concentration` controls how tight the
@@ -192,6 +200,15 @@ def search(df: pd.DataFrame, tcfg: TuneConfig | None = None, top_n: int = 5) -> 
             trail_activation = BacktestConfig().trailing_activation_atr_mult
             trail_distance = BacktestConfig().trailing_distance_atr_mult
 
+        if tcfg.tune_vol_filter:
+            vol_enabled = True
+            vol_ratio_max = float(rng.uniform(*tcfg.vol_ratio_max_range))
+            vol_reduction = float(rng.uniform(*tcfg.vol_reduction_mult_range))
+        else:
+            vol_enabled = False
+            vol_ratio_max = BacktestConfig().vol_ratio_max
+            vol_reduction = BacktestConfig().vol_reduction_mult
+
         bt_cfg = BacktestConfig(
             starting_equity=tcfg.starting_equity,
             risk_pct=tcfg.risk_pct,
@@ -200,6 +217,10 @@ def search(df: pd.DataFrame, tcfg: TuneConfig | None = None, top_n: int = 5) -> 
             trailing_stop_enabled=trail_enabled,
             trailing_activation_atr_mult=trail_activation,
             trailing_distance_atr_mult=trail_distance,
+            vol_filter_enabled=vol_enabled,
+            vol_ratio_max=vol_ratio_max,
+            vol_reduction_mult=vol_reduction,
+            vol_lookback=tcfg.vol_lookback,
         )
 
         scores = score_from_features(feat_buy, feat_sell, cfg)
@@ -235,6 +256,9 @@ def search(df: pd.DataFrame, tcfg: TuneConfig | None = None, top_n: int = 5) -> 
                 "trail_active": bt_cfg.trailing_stop_enabled,
                 "trail_activation": round(bt_cfg.trailing_activation_atr_mult, 2),
                 "trail_distance": round(bt_cfg.trailing_distance_atr_mult, 2),
+                "vol_active": bt_cfg.vol_filter_enabled,
+                "vol_ratio_max": round(bt_cfg.vol_ratio_max, 2),
+                "vol_reduction": round(bt_cfg.vol_reduction_mult, 2),
                 **{f"w_{k}": v for k, v in cfg.weights.items()},
                 "avg_train_obj": round(c["avg_train_obj"], 3),
                 "avg_test_obj": round(float(np.mean(test_objs)), 3),
