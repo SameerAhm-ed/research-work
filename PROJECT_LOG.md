@@ -5,6 +5,79 @@ reasoning behind decisions doesn't get lost. Newest entries at the top.
 
 ---
 
+## Round 12: the biggest mistake caught in this project -- and the fix
+
+**Mistake, caught properly before real money was ever at stake.** Got a
+~2.5-month GOLD M1 (1-minute) export. Built goldscalper/fill_validation.py
+to replay the H1-backtest's realized trades against real intrabar M1
+price paths (same SL/TP/trailing logic, just driven by 60x finer bars),
+to check whether the H1 approximation (which can't see the true path
+within an hour) was materially wrong.
+
+It was. H1-simulated PnL for the 68 trend_htf trades in the M1 window:
+$2,526. M1-precise replay: $881 -- a ~65% overstatement. Root cause:
+GOLD's average H1 bar range is ~1x its own ATR (they're nearly the same
+statistic), so the tuned trailing distance (0.46-0.53x ATR) sat *inside*
+a single bar's ordinary noise. The H1 backtest used the bar's high/low as
+"best price reached" and assumed the trade could ride toward it before
+the trailing stop caught it -- but within that same hour, price often
+touched the stop first. Exit *reason* always matched (68/68); the bias
+was purely in exit *price*, concentrated entirely in trailing-stop exits
+(plain SL exits matched to the cent).
+
+This also meant `trend_low_dd` and `EURUSD` were almost certainly broken
+the same way -- both used equally tight trailing distances (0.51x,
+0.48x), just unverified since M1 data doesn't cover their trades.
+
+**Fix:** raised the trailing distance floor to 1.5x ATR (default changed
+in TuneConfig itself, not just the presets, so this can't silently recur
+in a future search). Re-tuned all three presets with the same
+methodology as before -- walk-forward validation, locked holdout, full
+continuous history check -- then re-verified trend_htf against the M1
+data: largest single-trade discrepancy dropped from ~$50 to $4.54, no
+systematic bias remaining.
+
+**Honest recalibration -- performance is real but less flattering than
+before:**
+
+| | trend_htf (before/after) | trend_low_dd (before/after) | EURUSD (before/after) |
+|---|---|---|---|
+| Win rate | 77% -> **42%** | 80% -> **44%** | 83% -> **58%** |
+| Max drawdown | -7.63% -> **-9.94%** | -5.71% -> **-8.97%** | -5.09% -> **-4.67%** |
+| Profit factor | 1.56 -> 1.45 | 1.66 -> 1.61 | 1.35 -> 1.44 |
+| Sharpe | 2.27 -> 1.33 | 2.18 -> 1.21 | 1.17 -> 0.73 |
+
+The high win rates and shallow drawdowns reported through Rounds 4-11
+were partly an artifact of a simulation that let the tightest trailing
+stops "cheat" -- not a real property of the strategies. The corrected
+numbers are a normal trend-following profile: fewer, bigger wins, real
+(higher) drawdown.
+
+**One more honest layer, found by re-running Monte Carlo (Round 10) on
+the corrected configs:** the realized drawdowns above are themselves on
+the *favorable* side of what could have happened. trend_htf's -9.94%
+sits at the 98th percentile of the shuffle distribution (only 2% of
+reorderings of the same trades would have had a shallower drawdown);
+the median simulated drawdown is -14.7%, and the worst 1% tail reaches
+-25.8%. Same pattern for trend_low_dd (actual -8.97% at the 86th
+percentile, median -11.4%, 1% tail -21.2%). Fewer trades (a side effect
+of the wider, now-trustworthy trailing stops) means more variance in
+what a given historical sequence could have looked like -- the single
+realized path is less representative of "typical" performance than it
+was with the old, higher-frequency (but broken) configs.
+
+**Portfolio combination re-checked with corrected configs:** GOLD+EURUSD
+combined drawdown -5.42% vs GOLD alone's -9.94% (still a real,
+substantial reduction) while retaining ~56% of the return (130.4% vs
+233.4%, same total capital). The diversification finding from Round 11
+survives the fix.
+
+Old (buggy) presets kept under `_INVALIDATED_` names in
+goldscalper/presets.py, not deleted -- so the record of what changed and
+why stays intact.
+
+---
+
 ## Round 11: EURUSD generalization confirmed + real diversification benefit found
 
 **Success -- this is the strongest validation result in the project.**
@@ -344,22 +417,35 @@ needed the CSV loader to be more flexible than a first pass assumed.
 
 ---
 
-## Where things stand (as of Round 9)
+## Where things stand (as of Round 12)
 
 **Active strategy:** `goldscalper/presets.py` -> `TREND_HTF_*`
 (`--preset trend_htf`). Trend-following on GOLD H1, gated by H4 trend
-confirmation, with a tight ATR-based trailing stop. Full 2020-01 to
-2026-07 real dataset: 1,797 trades, 77.0% win rate, profit factor 1.56,
-Sharpe 2.27, max drawdown -7.63%, +263.3% total return (~21.9% CAGR).
-Profitable in every calendar year. Validated on a locked holdout year the
-search never touched, and re-validated under 6/8-fold walk-forward
-splits (methodology carried over from the conservative config's Round 6
-checks -- applies equally here since it's the same validation pipeline).
+confirmation, with an ATR-based trailing stop wide enough to be
+trustworthy on H1 data (>=3x ATR, fixed in Round 12 after M1 validation
+caught a ~65% overstatement bug in the previous, too-tight version).
+Full 2020-01 to 2026-07 real dataset: 758 trades, 42.0% win rate, profit
+factor 1.45, Sharpe 1.33, max drawdown -9.94%, +233.4% total return.
+Holdout year (locked, never searched): 117 trades, profit factor 1.74,
+Sharpe 2.40, max DD -7.50%, +40.3% return. Verified against real M1
+intrabar data (largest single-trade discrepancy: $4.54).
+
+Per the Monte Carlo check (Round 10, re-run in Round 12 on the corrected
+config): treat -9.94% as an optimistic case, not the expected one --
+median simulated drawdown for this same set of trades is -14.7%, and the
+worst 1% tail reaches -25.8%.
 
 **Conservative alternative**, still available (`--preset trend_low_dd`):
-same idea without the H4 gate, ~3.7 points lower CAGR, shallower drawdown
-(-5.71% worst case vs -7.63%). Documented in Round 9 above; pick this
-instead if the extra drawdown ever stops feeling worth it.
+same idea without the H4 gate. 283 trades, profit factor 1.61, Sharpe
+1.21, max DD -8.97%, +157.4% return -- closer to trend_htf than it used
+to be, now that both use the same trustworthy trailing-distance floor.
+
+**EURUSD** (`presets.EURUSD_*`, no CLI preset yet): the generalization
+check (Round 11) that confirmed this isn't a gold-specific pattern. 142
+trades, profit factor 1.44, Sharpe 0.73, max DD -4.67%, +27.3% return.
+Combined with GOLD in a portfolio (`scripts/run_portfolio.py`): -5.42%
+drawdown vs GOLD alone's -9.94%, retaining ~56% of the return -- genuine
+diversification, survives the Round 12 fix.
 
 **What's been tried and ruled out** (all logged above with the actual
 numbers): more Edge Score factors beyond trend+round-number (the
@@ -368,29 +454,27 @@ volatility regime filter (Round 5), finer walk-forward re-validation
 alone without new structure (Round 6), MTF confirmation bolted onto an
 already-tuned config instead of re-optimized around it (Round 7). What
 *did* work: real transaction costs (Round 1, without which the backtest
-was lying), SL/TP tuning (Round 3), a trailing stop (Round 4), and MTF
-confirmation done properly (Round 8/9).
+was lying), SL/TP tuning (Round 3), a trailing stop -- eventually, after
+Round 12 fixed how tight it could safely be (Round 4/12), MTF
+confirmation done properly (Round 8/9), a second instrument for real
+diversification (Round 11), and Monte Carlo trade-sequence analysis
+becoming a standard check, not an afterthought (Round 10/12).
 
 **What's still not done, roughly in order of expected value:**
 
-1. **Second instrument for real diversification.** Everything so far is
-   one instrument (GOLD), one broker, one H1 feed. A second, less-
-   correlated market is the strongest remaining lever for a genuine
-   drawdown reduction (as opposed to trading return for drawdown, which
-   is what every tuning round so far has actually been doing). Needs a
-   fresh MT5 export from you.
-2. **M1-precision fill validation.** Discussed but not yet done: our
-   backtest assumes a conservative same-bar tie-break when SL and TP are
-   both touched within one H1 bar. The trailing stop in particular
-   (activates as tight as 0.4-0.9x ATR) is exactly the kind of parameter
-   where intrabar path matters. M1 data (not full ticks -- see the
-   discussion when this came up) would let us check the H1 backtest isn't
-   quietly overstating performance. Needs an M1 export from you.
-3. **Forward paper-testing.** The real test of all of this: run it against
-   live prices going forward, where nothing has been tuned to fit. Doesn't
-   need new data, needs a decision to stop optimizing on history and start
-   watching it work (or not) on the future.
-4. **Live MT4/MT5 execution bridge.** Only worth building once paper
+1. **Forward paper-testing.** The real test of all of this: run it
+   against live prices going forward, where nothing has been tuned to
+   fit. Doesn't need new data, needs a decision to stop optimizing on
+   history and start watching it work (or not) on the future. More
+   pressing now than before Round 12 -- the honest tail-risk numbers
+   from Monte Carlo make this the natural next checkpoint rather than
+   further tuning.
+2. **M1 data for EURUSD**, and/or a longer GOLD M1 window, to extend the
+   fill-precision check's coverage (currently only ~2.5 months of GOLD).
+   Not blocking -- the fix (wider trailing floor) is a structural,
+   instrument-agnostic correction, not something that needs new data to
+   justify -- but broader M1 coverage would sharpen confidence further.
+3. **Live MT4/MT5 execution bridge.** Only worth building once paper
    results earn it -- this environment can't run MT4/MT5 itself (Windows
    dependency), so this step happens on your machine/VPS when we get there.
 
