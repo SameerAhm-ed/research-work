@@ -142,22 +142,123 @@ def _bar_factors(
     return factors
 
 
+def _zone_feature(
+    events: pd.DataFrame, direction: str, price: np.ndarray, tol: np.ndarray, n: int, idx: pd.DatetimeIndex
+) -> np.ndarray:
+    """Vectorized version of the FVG/order-block confluence check: for each
+    zone event, mark True over the bar range it's active (confirmed_at up to
+    mitigated_at) wherever price sits inside [bottom-tol, top+tol]. Loops
+    over events (few thousand at most), not bars, so this stays fast at any
+    dataset size."""
+    active = np.zeros(n, dtype=bool)
+    if events.empty:
+        return active
+    ev = events[events["direction"] == direction]
+    if ev.empty:
+        return active
+
+    start_pos = idx.searchsorted(ev["confirmed_at"].to_numpy())
+    mit = ev["mitigated_at"]
+    mit_known = mit.notna().to_numpy()
+    end_pos = np.full(len(ev), n, dtype=np.int64)
+    end_pos[mit_known] = idx.searchsorted(mit.dropna().to_numpy())
+
+    tops = ev["top"].to_numpy()
+    bottoms = ev["bottom"].to_numpy()
+
+    for start, end, top, bottom in zip(start_pos, end_pos, tops, bottoms):
+        start = max(int(start), 0)
+        end = min(int(end), n)
+        if end <= start:
+            continue
+        seg_price = price[start:end]
+        seg_tol = tol[start:end]
+        active[start:end] |= (seg_price >= bottom - seg_tol) & (seg_price <= top + seg_tol)
+
+    return active
+
+
+def _event_window_feature(
+    events: pd.DataFrame, direction: str, lookback_bars: int, n: int, idx: pd.DatetimeIndex
+) -> np.ndarray:
+    """Vectorized version of the sweep/structure-break lookback check: for
+    each point event, mark True for the event's bar plus the next
+    `lookback_bars` bars. Loops over events, not bars."""
+    active = np.zeros(n, dtype=bool)
+    if events.empty:
+        return active
+    ev = events[events["direction"] == direction]
+    if ev.empty:
+        return active
+
+    positions = idx.searchsorted(ev["at"].to_numpy())
+    for p in positions:
+        p = int(p)
+        if p >= n or p < 0:
+            continue
+        end = min(p + lookback_bars + 1, n)
+        active[p:end] = True
+
+    return active
+
+
 def compute_direction_features(
     df: pd.DataFrame, smc_data: dict, direction: str, cfg: EdgeScoreConfig | None = None
 ) -> pd.DataFrame:
     """Boolean feature matrix (bars x FACTOR_KEYS) for one direction.
 
-    This is the expensive step (per-bar SMC zone lookups) and is
+    This is the expensive step conceptually (SMC-zone lookups per bar) but
+    is computed by looping over SMC *events* (typically hundreds to a few
+    thousand) rather than bars (which can be tens of thousands for a few
+    years of H1 data), using numpy slicing to fill in active ranges. It's
     weight-independent -- compute it once per (data, direction) pair and
     reuse it across an arbitrary number of weight/threshold trials via
     score_from_features().
     """
     cfg = cfg or EdgeScoreConfig()
-    rows = []
-    for i in range(len(df)):
-        factors = _bar_factors(i, direction, df, smc_data, cfg)
-        rows.append({k: v[0] for k, v in factors.items()})
-    return pd.DataFrame(rows, index=df.index, columns=FACTOR_KEYS)
+    n = len(df)
+    idx = df.index
+    zone_dir = "bullish" if direction == "buy" else "bearish"
+    trend_match = 1 if direction == "buy" else -1
+
+    price = df["close"].to_numpy(dtype=float)
+    atr_val = df["atr"].to_numpy(dtype=float)
+    rsi_val = df["rsi"].to_numpy(dtype=float)
+    trend_dir = df["trend_direction"].to_numpy()
+
+    tol = np.where(np.isnan(atr_val), 0.0, atr_val) * cfg.proximity_atr_mult
+
+    features = {}
+    features["trend_alignment"] = trend_dir == trend_match
+
+    rsi_known = ~np.isnan(rsi_val)
+    if direction == "buy":
+        features["rsi_filter"] = rsi_known & (rsi_val < 70)
+    else:
+        features["rsi_filter"] = rsi_known & (rsi_val > 30)
+
+    features["fvg_confluence"] = _zone_feature(smc_data["fvgs"], zone_dir, price, tol, n, idx)
+    features["order_block_confluence"] = _zone_feature(
+        smc_data["order_blocks"], zone_dir, price, tol, n, idx
+    )
+    features["liquidity_sweep"] = _event_window_feature(
+        smc_data["sweeps"], zone_dir, cfg.event_lookback_bars, n, idx
+    )
+    features["structure_break"] = _event_window_feature(
+        smc_data["breaks"], zone_dir, cfg.event_lookback_bars, n, idx
+    )
+
+    nearest_round = np.round(price / cfg.round_number_step) * cfg.round_number_step
+    atr_known = ~np.isnan(atr_val)
+    features["round_number"] = atr_known & (
+        np.abs(price - nearest_round) <= atr_val * cfg.round_number_tolerance_atr_mult
+    )
+
+    hours = idx.hour.to_numpy()
+    lo, hi = cfg.session_high_vol_hours
+    features["session_timing"] = (hours >= lo) & (hours < hi)
+
+    return pd.DataFrame(features, index=idx, columns=FACTOR_KEYS)
 
 
 def score_from_features(
