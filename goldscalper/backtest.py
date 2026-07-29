@@ -35,6 +35,15 @@ class BacktestConfig:
     trailing_stop_enabled: bool = False
     trailing_activation_atr_mult: float = 2.0
     trailing_distance_atr_mult: float = 2.0
+    # Volatility regime filter: when a bar's ATR is running hot relative to
+    # its own recent average (atr / rolling_mean(atr, vol_lookback) >
+    # vol_ratio_max), new entries are sized down by vol_reduction_mult
+    # instead of taken at full risk -- the classic "half risk in volatile
+    # markets" rule. Off by default (identical to no filter).
+    vol_filter_enabled: bool = False
+    vol_lookback: int = 100
+    vol_ratio_max: float = 1.5
+    vol_reduction_mult: float = 0.5
 
 
 def run_backtest(df: pd.DataFrame, scores: pd.DataFrame, cfg: BacktestConfig | None = None):
@@ -57,6 +66,13 @@ def run_backtest(df: pd.DataFrame, scores: pd.DataFrame, cfg: BacktestConfig | N
         spread_price = df["spread"].to_numpy(dtype=float) * cfg.point_size
     else:
         spread_price = np.zeros(n, dtype=float)
+
+    if cfg.vol_filter_enabled:
+        rolling_atr_avg = (
+            df["atr"].rolling(cfg.vol_lookback, min_periods=cfg.vol_lookback // 2).mean().to_numpy()
+        )
+    else:
+        rolling_atr_avg = None
 
     approved = scores["approved"].to_numpy(dtype=bool)
     direction_arr = scores["direction"].to_numpy()
@@ -106,6 +122,11 @@ def run_backtest(df: pd.DataFrame, scores: pd.DataFrame, cfg: BacktestConfig | N
 
                 stop_distance = abs(entry_price - sl)
                 risk_amount = equity * cfg.risk_pct
+                if cfg.vol_filter_enabled and rolling_atr_avg is not None:
+                    avg_atr = rolling_atr_avg[i]
+                    if avg_atr and not math.isnan(avg_atr) and avg_atr > 0:
+                        if atr_val / avg_atr > cfg.vol_ratio_max:
+                            risk_amount *= cfg.vol_reduction_mult
                 units = risk_amount / stop_distance if stop_distance > 0 else 0.0
 
                 if units > 0:
