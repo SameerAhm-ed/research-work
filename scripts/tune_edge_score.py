@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """CLI entry point: randomized search over Edge Score weights + threshold,
-with a chronological train/test split to flag overfitting.
+validated by walk-forward cross-validation (multiple chronological
+train/test folds) to flag overfitting or a merely-lucky split.
 
 Usage:
     python scripts/tune_edge_score.py --csv data/xauusd_h1.csv --trials 300
@@ -31,8 +32,10 @@ def main() -> None:
     parser.add_argument("--synthetic", action="store_true", help="Use generated synthetic data")
     parser.add_argument("--bars", type=int, default=4000, help="Bars for synthetic data")
     parser.add_argument("--trials", type=int, default=200, help="Number of random weight sets to try")
-    parser.add_argument("--train-frac", type=float, default=0.7, help="Chronological train split fraction")
-    parser.add_argument("--min-trades", type=int, default=15, help="Min trades for a candidate to count")
+    parser.add_argument(
+        "--folds", type=int, default=4, help="Walk-forward folds (data split into folds+1 chronological chunks)"
+    )
+    parser.add_argument("--min-trades", type=int, default=15, help="Min trades per fold for a candidate to count")
     parser.add_argument("--top-n", type=int, default=5, help="How many top candidates to report")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--out", type=str, default="reports/tuning_results.csv")
@@ -56,17 +59,17 @@ def main() -> None:
 
     tcfg = TuneConfig(
         n_trials=args.trials,
-        train_frac=args.train_frac,
+        n_folds=args.folds,
         min_trades=args.min_trades,
         seed=args.seed,
     )
 
-    print(f"Running {args.trials} trials ({tcfg.train_frac:.0%} train / {1-tcfg.train_frac:.0%} test split)...")
+    print(f"Running {args.trials} trials across {tcfg.n_folds} walk-forward folds...")
     results = search(df, tcfg, top_n=args.top_n)
 
     pd.set_option("display.width", 160)
     pd.set_option("display.max_columns", 30)
-    print("\n=== Top candidates (train-ranked, evaluated out-of-sample on test) ===")
+    print("\n=== Top candidates (ranked by avg train objective across folds) ===")
     print(results.to_string(index=False))
 
     out_path = Path(args.out)
@@ -76,11 +79,16 @@ def main() -> None:
 
     if not results.empty:
         best = results.iloc[0]
-        degrades = best["test_obj"] < best["train_obj"] * 0.5 or best["test_trades"] < args.min_trades
+        degrades = (
+            best["avg_test_obj"] < best["avg_train_obj"] * 0.5
+            or best["worst_fold_test_obj"] < 0
+            or best["total_test_trades"] < args.min_trades * tcfg.n_folds
+        )
         if degrades:
             print(
-                "\nNote: the top train candidate performs notably worse (or has too few "
-                "trades) out-of-sample -- treat it as overfit, not a validated edge."
+                "\nNote: the top train candidate performs notably worse out-of-sample, or "
+                "has at least one losing/too-thin fold -- treat it as overfit, not a "
+                "validated edge, even though its train-side numbers look good."
             )
 
 
