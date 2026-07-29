@@ -26,6 +26,15 @@ class BacktestConfig:
     max_concurrent_positions: int = 1  # only 1 supported in this version
     point_size: float = 0.01  # price per broker "point" (e.g. GOLD: 2 digits -> 0.01)
     use_spread_costs: bool = True  # charge the historical spread if df has one
+    # Trailing stop: once a trade is up `trailing_activation_atr_mult` x the
+    # ATR-at-entry, the fixed take-profit is dropped and the stop instead
+    # trails `trailing_distance_atr_mult` x that same ATR behind the best
+    # price seen since entry -- so a trend can run past the original target
+    # instead of being capped there. Off by default (identical to the
+    # original fixed SL/TP behavior).
+    trailing_stop_enabled: bool = False
+    trailing_activation_atr_mult: float = 2.0
+    trailing_distance_atr_mult: float = 2.0
 
 
 def run_backtest(df: pd.DataFrame, scores: pd.DataFrame, cfg: BacktestConfig | None = None):
@@ -65,6 +74,9 @@ def run_backtest(df: pd.DataFrame, scores: pd.DataFrame, cfg: BacktestConfig | N
     pos_units = 0.0
     pos_entry_at = None
     pos_score = 0.0
+    pos_entry_atr = 0.0
+    pos_extreme = 0.0
+    pos_trailing_active = False
 
     has_pending = False
     pending_direction = ""
@@ -105,6 +117,9 @@ def run_backtest(df: pd.DataFrame, scores: pd.DataFrame, cfg: BacktestConfig | N
                     pos_units = units
                     pos_entry_at = date
                     pos_score = pending_score
+                    pos_entry_atr = atr_val
+                    pos_extreme = entry_price
+                    pos_trailing_active = False
             has_pending = False
 
         # 2. Check exit on open position using this bar's range
@@ -116,13 +131,14 @@ def run_backtest(df: pd.DataFrame, scores: pd.DataFrame, cfg: BacktestConfig | N
                 hit_sl = high[i] >= pos_sl
                 hit_tp = low[i] <= pos_tp
 
+            sl_label = "Trailing SL" if pos_trailing_active else "SL"
             exit_price = None
             reason = None
             if hit_sl and hit_tp:
                 # Conservative: assume the adverse side was touched first.
-                exit_price, reason = pos_sl, "SL (ambiguous same-bar)"
+                exit_price, reason = pos_sl, f"{sl_label} (ambiguous same-bar)"
             elif hit_sl:
-                exit_price, reason = pos_sl, "SL"
+                exit_price, reason = pos_sl, sl_label
             elif hit_tp:
                 exit_price, reason = pos_tp, "TP"
 
@@ -150,9 +166,33 @@ def run_backtest(df: pd.DataFrame, scores: pd.DataFrame, cfg: BacktestConfig | N
                 )
                 has_position = False
 
+        # 3. If still open, update the trailing stop from this bar's range
+        # -- based on the bar that just closed, so it only affects future
+        # exit checks, never this bar's own (no lookahead).
+        if has_position and cfg.trailing_stop_enabled and pos_entry_atr > 0:
+            if pos_direction == "buy":
+                pos_extreme = max(pos_extreme, high[i])
+                profit_atr = (pos_extreme - pos_entry_price) / pos_entry_atr
+            else:
+                pos_extreme = min(pos_extreme, low[i])
+                profit_atr = (pos_entry_price - pos_extreme) / pos_entry_atr
+
+            if not pos_trailing_active and profit_atr >= cfg.trailing_activation_atr_mult:
+                pos_trailing_active = True
+                # Fixed target is dropped once trailing takes over.
+                pos_tp = math.inf if pos_direction == "buy" else -math.inf
+
+            if pos_trailing_active:
+                if pos_direction == "buy":
+                    candidate_sl = pos_extreme - cfg.trailing_distance_atr_mult * pos_entry_atr
+                    pos_sl = max(pos_sl, candidate_sl)
+                else:
+                    candidate_sl = pos_extreme + cfg.trailing_distance_atr_mult * pos_entry_atr
+                    pos_sl = min(pos_sl, candidate_sl)
+
         equity_curve[i] = equity
 
-        # 3. Generate a new signal from this bar's close, to fill next bar
+        # 4. Generate a new signal from this bar's close, to fill next bar
         if not has_position and not has_pending and approved[i]:
             has_pending = True
             pending_direction = direction_arr[i]
