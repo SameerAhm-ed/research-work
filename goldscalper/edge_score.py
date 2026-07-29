@@ -45,6 +45,11 @@ class EdgeScoreConfig:
     round_number_tolerance_atr_mult: float = 0.5
     # London 07-16 UTC, NY 12-21 UTC -> overlap 12-16 UTC is highest-liquidity
     session_high_vol_hours: tuple = (12, 16)
+    # Multi-timeframe confirmation: a hard gate, not a weighted factor --
+    # column names (from mtf.add_multi_timeframe_trend, e.g. "trend_h4")
+    # that must all agree with the candidate direction for it to be
+    # approved. Empty tuple (default) disables the gate entirely.
+    require_htf_trend: tuple = ()
 
 
 def precompute_smc(df: pd.DataFrame) -> dict:
@@ -262,10 +267,17 @@ def compute_direction_features(
 
 
 def score_from_features(
-    feat_buy: pd.DataFrame, feat_sell: pd.DataFrame, cfg: EdgeScoreConfig
+    feat_buy: pd.DataFrame,
+    feat_sell: pd.DataFrame,
+    cfg: EdgeScoreConfig,
+    df: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Vectorized scoring: weights . features, per bar, for both directions.
-    This is the cheap step -- safe to call many times in a weight search."""
+    This is the cheap step -- safe to call many times in a weight search.
+
+    `df` is only needed when cfg.require_htf_trend is set -- it's where the
+    multi-timeframe trend columns (from mtf.add_multi_timeframe_trend) live.
+    """
     w = np.array([cfg.weights[k] for k in FACTOR_KEYS], dtype=float)
 
     score_buy = feat_buy[FACTOR_KEYS].to_numpy(dtype=float) @ w
@@ -273,6 +285,14 @@ def score_from_features(
 
     buy_wins = (score_buy >= cfg.approval_threshold) & (score_buy >= score_sell)
     sell_wins = (score_sell >= cfg.approval_threshold) & (score_sell > score_buy)
+
+    if cfg.require_htf_trend:
+        if df is None:
+            raise ValueError("cfg.require_htf_trend is set but no df was passed to check it against")
+        for col in cfg.require_htf_trend:
+            htf = df[col].to_numpy()
+            buy_wins &= htf == 1
+            sell_wins &= htf == -1
 
     direction = np.full(len(feat_buy), None, dtype=object)
     direction[buy_wins] = "buy"
@@ -312,7 +332,7 @@ def compute_edge_scores(
 
     feat_buy = compute_direction_features(df, smc_data, "buy", cfg)
     feat_sell = compute_direction_features(df, smc_data, "sell", cfg)
-    return score_from_features(feat_buy, feat_sell, cfg)
+    return score_from_features(feat_buy, feat_sell, cfg, df)
 
 
 def explain(i: int, direction: str, df: pd.DataFrame, smc_data: dict, cfg: EdgeScoreConfig | None = None):
