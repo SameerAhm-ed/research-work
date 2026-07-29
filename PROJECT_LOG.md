@@ -5,6 +5,38 @@ reasoning behind decisions doesn't get lost. Newest entries at the top.
 
 ---
 
+## Round 7: multi-timeframe confirmation, bolted on -- doesn't help as tested
+
+**Negative result, logged honestly.** Built H4/D1 trend confirmation
+(goldscalper/mtf.py): derives higher-timeframe EMA9/21 trend by resampling
+the existing H1 data (no new export needed -- more reliable than joining
+two separately-exported files, which risks a boundary-alignment mismatch),
+shifted by one higher-TF bar before aligning back so it's lookahead-safe
+(verified against a hand-built step-function test). Wired in as a hard
+approval gate (EdgeScoreConfig.require_htf_trend), deliberately not a
+weighted/searchable factor, to avoid growing the overfitting surface.
+
+Tested by bolting the gate onto the current best preset's already-tuned
+weights/SL/TP/trailing (H4 only, D1 only, both). Full continuous
+6.5-year drawdown got *worse* in every variant (-6.1% to -8.1% vs the
+baseline's -5.71%), and Sharpe/return dropped too -- even though some
+variants looked better on the holdout alone (H4+D1: holdout drawdown
+-1.99% vs baseline -3.95%). Consistent with the Round 6 lesson: a
+holdout-only improvement isn't trustworthy without checking the full
+history, and here the full history says no.
+
+**Caveat on this result:** this only tests bolting the gate onto a
+config tuned *without* it -- thinning out the trade set changes the
+statistics the rest of the config was tuned for, so this isn't
+necessarily a fair test of MTF confirmation as an idea, just of grafting
+it on after the fact. A proper test would re-run the full search with
+the gate active throughout, letting weights/SL/TP/trailing re-adapt to
+the smaller, filtered trade set. Not done yet -- pausing here to report
+the honest bolt-on result before deciding whether that's worth the
+compute.
+
+---
+
 ## Round 6: 6-fold search finds nothing better; a holdout window isn't the whole story
 
 **Success (validation methodology got stricter) + a negative result (nothing
