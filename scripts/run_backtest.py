@@ -50,10 +50,14 @@ def main() -> None:
 
     if args.preset == "trend_low_dd":
         edge_cfg = presets.TREND_LOW_DRAWDOWN_EDGE_CONFIG
+        preset_bt = presets.TREND_LOW_DRAWDOWN_BACKTEST_CONFIG
         bt_cfg = BacktestConfig(
             risk_pct=args.risk_pct,
-            sl_atr_mult=presets.TREND_LOW_DRAWDOWN_BACKTEST_CONFIG.sl_atr_mult,
-            tp_atr_mult=presets.TREND_LOW_DRAWDOWN_BACKTEST_CONFIG.tp_atr_mult,
+            sl_atr_mult=preset_bt.sl_atr_mult,
+            tp_atr_mult=preset_bt.tp_atr_mult,
+            trailing_stop_enabled=preset_bt.trailing_stop_enabled,
+            trailing_activation_atr_mult=preset_bt.trailing_activation_atr_mult,
+            trailing_distance_atr_mult=preset_bt.trailing_distance_atr_mult,
         )
         print("Using preset: trend_low_dd (see goldscalper/presets.py for validation notes)")
     else:

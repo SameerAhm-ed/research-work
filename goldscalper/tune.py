@@ -51,6 +51,13 @@ class TuneConfig:
     tune_sl_tp: bool = False
     sl_atr_mult_range: tuple = (1.0, 4.0)
     tp_atr_mult_range: tuple = (1.5, 6.0)
+    # Trailing stop, searched jointly with everything else when
+    # tune_trailing=True (forces trailing_stop_enabled=True for every
+    # trial in this search -- it's a dedicated "does trailing help" run,
+    # not a per-trial coin flip).
+    tune_trailing: bool = False
+    trailing_activation_atr_mult_range: tuple = (0.5, 3.0)
+    trailing_distance_atr_mult_range: tuple = (0.5, 3.0)
     # Optional focused-search bias: sample weight vectors clustered around
     # `anchor_weights` (a dict like DEFAULT_WEIGHTS) instead of uniformly
     # over the whole simplex. `concentration` controls how tight the
@@ -175,11 +182,24 @@ def search(df: pd.DataFrame, tcfg: TuneConfig | None = None, top_n: int = 5) -> 
             tp_mult = float(rng.uniform(*tcfg.tp_atr_mult_range))
         else:
             sl_mult, tp_mult = BacktestConfig().sl_atr_mult, BacktestConfig().tp_atr_mult
+
+        if tcfg.tune_trailing:
+            trail_enabled = True
+            trail_activation = float(rng.uniform(*tcfg.trailing_activation_atr_mult_range))
+            trail_distance = float(rng.uniform(*tcfg.trailing_distance_atr_mult_range))
+        else:
+            trail_enabled = False
+            trail_activation = BacktestConfig().trailing_activation_atr_mult
+            trail_distance = BacktestConfig().trailing_distance_atr_mult
+
         bt_cfg = BacktestConfig(
             starting_equity=tcfg.starting_equity,
             risk_pct=tcfg.risk_pct,
             sl_atr_mult=sl_mult,
             tp_atr_mult=tp_mult,
+            trailing_stop_enabled=trail_enabled,
+            trailing_activation_atr_mult=trail_activation,
+            trailing_distance_atr_mult=trail_distance,
         )
 
         scores = score_from_features(feat_buy, feat_sell, cfg)
@@ -212,6 +232,9 @@ def search(df: pd.DataFrame, tcfg: TuneConfig | None = None, top_n: int = 5) -> 
                 "threshold": round(cfg.approval_threshold, 1),
                 "sl_atr_mult": round(bt_cfg.sl_atr_mult, 2),
                 "tp_atr_mult": round(bt_cfg.tp_atr_mult, 2),
+                "trail_active": bt_cfg.trailing_stop_enabled,
+                "trail_activation": round(bt_cfg.trailing_activation_atr_mult, 2),
+                "trail_distance": round(bt_cfg.trailing_distance_atr_mult, 2),
                 **{f"w_{k}": v for k, v in cfg.weights.items()},
                 "avg_train_obj": round(c["avg_train_obj"], 3),
                 "avg_test_obj": round(float(np.mean(test_objs)), 3),
