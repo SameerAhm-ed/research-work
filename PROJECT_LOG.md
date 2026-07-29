@@ -5,6 +5,35 @@ reasoning behind decisions doesn't get lost. Newest entries at the top.
 
 ---
 
+## Round 6: 6-fold search finds nothing better; a holdout window isn't the whole story
+
+**Success (validation methodology got stricter) + a negative result (nothing
+adopted).** Re-validated the Round 4 preset under 6 and 8 walk-forward folds
+instead of 4 -- held up well (6/6 folds profitable at 6 folds; only one very
+small loss, -1.07%, across 8 folds). Then re-ran the full weights+SL/TP+
+trailing search with 6 folds to see if the stricter bar surfaced anything
+better.
+
+One candidate looked like a genuine upgrade at first: on the locked holdout,
++44.2% return vs the current preset's +29.3%, *and* better drawdown (-3.48%
+vs -3.95%), *and* better Sharpe (3.38 vs 3.25). Stress-tested it first this
+time (perturbed SL/TP/trailing by +-10%, checked neighboring integer
+thresholds) -- unlike Round 5's candidate, this one was NOT fragile; behavior
+stayed smooth and stable throughout.
+
+But checking the **full continuous 6.5-year run** (not just the holdout
+window) told a different story: real max drawdown -9.87%, clearly worse
+than the current preset's -5.71%. The holdout year this candidate was
+checked against simply happened not to contain its worst historical
+stretch -- which is somewhere earlier in the dev period. Not adopted.
+
+**Methodological lesson worth keeping:** an honest out-of-sample check
+(holdout, or any single walk-forward fold) can still miss a strategy's
+worst drawdown if that particular window doesn't happen to contain it.
+From here on, no candidate gets adopted without checking the full
+continuous run across all available history, not just its holdout or
+fold-level numbers -- those are necessary checks, not sufficient ones.
+
 ## Round 5: found a real bug via manual reproduction; volatility filter doesn't beat Round 4
 
 **Mistake, caught before shipping.** Added a volatility regime filter (halve
@@ -148,14 +177,18 @@ needed the CSV loader to be more flexible than a first pass assumed.
 
 ---
 
-## Current best (as of Round 5)
+## Current best (as of Round 6)
 
 Unchanged from Round 4 -- see `goldscalper/presets.py` ->
 `TREND_LOW_DRAWDOWN_*`. Full 6.5-year dataset: 826 trades, 80.3% win
 rate, profit factor 1.66, Sharpe 2.18, max drawdown -5.71%, +197.45%
 total return. Validated on a locked, never-searched holdout year: 83.8%
-win rate, Sharpe 3.25, max DD -3.95%. Round 5's volatility filter was
-tried and properly validated but didn't beat this, so it wasn't adopted.
+win rate, Sharpe 3.25, max DD -3.95%. Additionally holds up under 6- and
+8-fold walk-forward re-validation (Round 6). Two follow-up attempts
+(volatility filter in Round 5, a 6-fold-search candidate in Round 6)
+both looked promising on partial views of the data but neither beat this
+config's full-history drawdown once checked properly, so neither was
+adopted.
 
 **Still not done:** no second instrument for diversification, no forward
 paper-trading, no live execution bridge.
