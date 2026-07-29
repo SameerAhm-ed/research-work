@@ -5,6 +5,37 @@ reasoning behind decisions doesn't get lost. Newest entries at the top.
 
 ---
 
+## Round 10: Monte Carlo trade-sequence analysis -- the realized result isn't a lucky fluke
+
+**Success -- new rigor added while waiting on the next data export.** Every
+number so far came from exactly one historical path through time. Built
+`goldscalper/montecarlo.py` to resample the active preset's realized
+trades (as per-trade % returns, so compounding stays correct regardless
+of order -- verified replaying the original order exactly reconstructs
+the real equity curve to floating-point precision) and generate a
+distribution of plausible outcomes instead of one point estimate.
+
+Two methods, 3000 simulations each, on trend_htf's 1,797 realized trades:
+- **Shuffle** (same trades, reordered): isolates how much drawdown depends
+  on when losing streaks happened to cluster. Total return is
+  mathematically order-invariant under compounding, so only drawdown
+  varies here.
+- **Bootstrap resample** (with replacement): tests sensitivity to the
+  exact set of trades observed; both return and drawdown vary.
+
+**Result: the realized -7.63% drawdown sits at the 58th percentile of
+the shuffle distribution, and the realized +263.3% return sits at the
+96th/50th percentile (shuffle/resample).** Both close to the simulated
+median, not an outlier best-case ordering -- meaningful evidence the
+reported numbers aren't just a lucky historical sequence.
+
+**But:** the worst 1% tail case reaches -14% to -15% drawdown -- roughly
+double what actually happened. That's real tail risk a single backtest
+run can't show on its own, worth keeping in mind before sizing up
+position risk for live/paper trading.
+
+---
+
 ## Round 9: adopted trend_htf as the active preset (user's decision)
 
 Broke Round 8's trade-off down by calendar year to make the decision
