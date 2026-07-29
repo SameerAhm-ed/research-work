@@ -5,6 +5,51 @@ reasoning behind decisions doesn't get lost. Newest entries at the top.
 
 ---
 
+## Round 11: EURUSD generalization confirmed + real diversification benefit found
+
+**Success -- this is the strongest validation result in the project.**
+Got EURUSD H1 data (2020-01 to 2026-07, same period as GOLD). Two tests:
+
+1. **Direct transfer** (GOLD's exact tuned weights/SL/TP, just fixing
+   EURUSD's instrument scale -- round_number_step 10.0->0.01, point_size
+   0.01->0.00001): weak. Profit factor 1.06, Sharpe 0.26, DD -13.27%.
+   Not a surprise -- exact parameter transfer between different-character
+   instruments rarely works well.
+2. **Independent search** (own random seed, own 85/15 dev/holdout split,
+   anchored on the same trend-following hypothesis but free to find its
+   own weights): converged on the same signature GOLD did -- moderate-high
+   trend_alignment + round_number + session_timing, structure_break near
+   zero -- *without being told to*. Full dataset: 716 trades, 82.8% win
+   rate, profit factor 1.35, Sharpe 1.17, max DD -5.09%, +55.45% return.
+   Holdout year: PF 1.20, Sharpe 0.69, DD -3.82%, +3.32% -- smaller
+   numbers (EURUSD is much lower-volatility than gold) but positive and
+   consistent with the full-history result.
+
+That the *same underlying pattern* (not the same numbers, the same
+concept: trend + round-number + session timing + H4 confirmation) emerges
+independently on a second, unrelated instrument is real evidence this
+isn't a gold-specific curve-fit -- it's the strongest generalization
+signal in the whole project so far.
+
+**Then the actual point of getting a second instrument: portfolio
+diversification.** Built goldscalper/portfolio.py to combine both legs'
+equity curves (dollar PnL, resampled onto a common index, summed).
+Combining GOLD + EURUSD at full risk_pct each, same total capital as
+GOLD alone: **combined drawdown -3.99%, roughly half of GOLD alone's
+-7.63%, while keeping ~60% of the return (159.4% vs 263.3%).** This is
+genuine diversification, not just an average -- each leg's own individual
+drawdown (GOLD -7.63%, EURUSD -5.09%) is *deeper* than the combined
+portfolio's -3.99%, because their bad stretches don't fully overlap in
+time. Verified the portfolio module reproduces the manual calculation
+exactly before trusting it.
+
+**Also fixed along the way:** tune.py's search() hardcoded GOLD-scale
+structural settings (round_number_step=10.0, point_size=0.01) with no
+way to override them -- silently wrong for any other instrument. Made
+these TuneConfig fields before running the EURUSD search.
+
+---
+
 ## Round 10: Monte Carlo trade-sequence analysis -- the realized result isn't a lucky fluke
 
 **Success -- new rigor added while waiting on the next data export.** Every
