@@ -40,6 +40,13 @@ class TuneConfig:
     seed: int = 42
     starting_equity: float = 10_000.0
     risk_pct: float = 0.01
+    # Optional focused-search bias: sample weight vectors clustered around
+    # `anchor_weights` (a dict like DEFAULT_WEIGHTS) instead of uniformly
+    # over the whole simplex. `concentration` controls how tight the
+    # cluster is -- higher stays closer to the anchor, lower explores more
+    # broadly around it. None (default) is the original unbiased search.
+    anchor_weights: dict | None = None
+    concentration: float = 3.0
 
 
 def walk_forward_folds(n_bars: int, n_folds: int) -> list[tuple[slice, slice]]:
@@ -62,10 +69,29 @@ def walk_forward_folds(n_bars: int, n_folds: int) -> list[tuple[slice, slice]]:
     return folds
 
 
-def sample_weights(rng: np.random.Generator, budget: float) -> dict:
+def sample_weights(
+    rng: np.random.Generator,
+    budget: float,
+    anchor: dict | None = None,
+    concentration: float = 3.0,
+) -> dict:
     """Sample a random weight vector over the same factors as
-    DEFAULT_WEIGHTS, summing to `budget`, via a Dirichlet draw."""
-    fractions = rng.dirichlet(np.ones(len(WEIGHT_KEYS)))
+    DEFAULT_WEIGHTS, summing to `budget`, via a Dirichlet draw.
+
+    With no anchor, this is uniform over the whole simplex (the original
+    unbiased search). With an anchor (a weights dict from a promising prior
+    result), samples cluster around that composition instead -- a "focused"
+    search of the neighborhood around a candidate that already looked good,
+    rather than re-exploring the whole 8-factor space from scratch.
+    """
+    if anchor is None:
+        alpha = np.ones(len(WEIGHT_KEYS))
+    else:
+        # +1 floor so a factor the anchor set to 0 can still occasionally
+        # come up nonzero -- otherwise it'd be permanently excluded.
+        alpha = np.array([anchor.get(k, 0.0) + 1.0 for k in WEIGHT_KEYS]) * concentration
+
+    fractions = rng.dirichlet(alpha)
     raw = fractions * budget
     weights = {k: float(round(v)) for k, v in zip(WEIGHT_KEYS, raw)}
     # Rounding can drift the sum by a point or two; correct on the largest weight.
@@ -130,7 +156,7 @@ def search(df: pd.DataFrame, tcfg: TuneConfig | None = None, top_n: int = 5) -> 
 
     candidates = []
     for _ in range(tcfg.n_trials):
-        weights = sample_weights(rng, tcfg.total_score_budget)
+        weights = sample_weights(rng, tcfg.total_score_budget, tcfg.anchor_weights, tcfg.concentration)
         threshold = float(rng.uniform(*tcfg.threshold_range))
         cfg = EdgeScoreConfig(weights=weights, approval_threshold=threshold)
 
