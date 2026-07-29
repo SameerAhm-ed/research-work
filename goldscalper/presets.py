@@ -13,10 +13,52 @@ from __future__ import annotations
 from .backtest import BacktestConfig
 from .edge_score import EdgeScoreConfig
 
-# "Direction B": trend-following, low-drawdown. Chosen over the
-# round-number-heavy "Direction A" alternative (higher return, but -20%
-# to -25% worst-fold drawdowns) for being consistently profitable across
-# every walk-forward fold with a much shallower worst case.
+# ACTIVE preset (chosen 2026-07-29): trend-following + H4 trend
+# confirmation gate. Weights/SL/TP/trailing were re-searched with the H4
+# gate active throughout (not bolted onto a config tuned without it --
+# see PROJECT_LOG.md Round 7/8), then validated on the full continuous
+# 2020-01 - 2026-07 dataset and a locked, never-searched holdout year.
+#
+# Deliberately chosen over TREND_LOW_DRAWDOWN_* below: higher return and
+# Sharpe in exchange for somewhat deeper (but still shallow) drawdown.
+# Full dataset: 1,797 trades, 77.0% win rate, profit factor 1.56, Sharpe
+# 2.27, max drawdown -7.63%, +263.3% total return (~21.9% CAGR).
+# Profitable in every calendar year 2020-2026 (see PROJECT_LOG.md Round 9
+# for the year-by-year breakdown). Requires a "trend_h4" column on the
+# input df -- see mtf.add_multi_timeframe_trend().
+TREND_HTF_WEIGHTS = {
+    "trend_alignment": 19,
+    "rsi_filter": 3,
+    "fvg_confluence": 6,
+    "order_block_confluence": 11,
+    "liquidity_sweep": 20,
+    "structure_break": 5,
+    "round_number": 19,
+    "session_timing": 17,
+}
+
+TREND_HTF_EDGE_CONFIG = EdgeScoreConfig(
+    weights=TREND_HTF_WEIGHTS,
+    approval_threshold=59.0,
+    require_htf_trend=("trend_h4",),
+)
+
+TREND_HTF_BACKTEST_CONFIG = BacktestConfig(
+    sl_atr_mult=3.09,
+    tp_atr_mult=5.10,
+    trailing_stop_enabled=True,
+    trailing_activation_atr_mult=0.46,
+    trailing_distance_atr_mult=0.53,
+)
+
+TREND_HTF_MTF_RULES = {"trend_h4": "4h"}
+
+# Conservative alternative (no HTF gate) -- kept available, not removed.
+# Lower return/Sharpe, shallower drawdown. "Direction B": trend-following,
+# low-drawdown, chosen over the round-number-heavy "Direction A"
+# alternative (higher return, but -20% to -25% worst-fold drawdowns) for
+# being consistently profitable across every walk-forward fold with a
+# much shallower worst case.
 #
 # Validation history:
 #   v1 (weights + threshold only, fixed 2.0x/2.5x SL/TP): full-dataset
