@@ -8,14 +8,19 @@ REQUIRED_COLUMNS = ["open", "high", "low", "close", "volume"]
 
 
 def load_csv(path: str) -> pd.DataFrame:
-    """Load a standard MT4/MT5 CSV export into a clean OHLCV DataFrame.
+    """Load a historical OHLCV CSV export into a clean OHLCV DataFrame.
 
-    Accepts either a combined "datetime" column or separate "date"+"time"
-    columns, case-insensitively. Returns a DataFrame indexed by UTC-naive
+    Accepts MT4/MT5-style exports: comma- or tab-delimited, column names
+    with or without angle brackets (MT5's native "Export Bars" writes
+    <DATE> <TIME> <OPEN> <HIGH> <LOW> <CLOSE> <TICKVOL> <VOL> <SPREAD>
+    tab-separated), either a combined "datetime" column or separate
+    "date"+"time" columns, and either "volume" or "tickvol"/"vol" for
+    volume (tick volume is used when real volume is all zero, which is
+    normal for OTC gold/forex CFDs). Returns a DataFrame indexed by
     timestamp with lowercase columns: open, high, low, close, volume.
     """
-    df = pd.read_csv(path)
-    df.columns = [c.strip().lower() for c in df.columns]
+    df = pd.read_csv(path, sep=None, engine="python")
+    df.columns = [c.strip().lower().strip("<>") for c in df.columns]
 
     if "datetime" in df.columns:
         idx = pd.to_datetime(df["datetime"])
@@ -30,6 +35,12 @@ def load_csv(path: str) -> pd.DataFrame:
 
     df = df.set_index(idx)
     df.index.name = "timestamp"
+
+    if "volume" not in df.columns:
+        if "tickvol" in df.columns and df["tickvol"].astype(float).sum() > 0:
+            df["volume"] = df["tickvol"]
+        elif "vol" in df.columns:
+            df["volume"] = df["vol"]
 
     missing = [c for c in REQUIRED_COLUMNS if c not in df.columns]
     if missing:
