@@ -47,11 +47,26 @@ account's broker limits).
    actually costs at this stop distance. That's the correct behavior:
    skipping a trade beats taking it at 7x the intended risk.
 
-**Not yet done:** decide whether to raise `InpRiskPct` to intentionally
-match the min-lot-driven risk on this account size, or wait until
-account equity grows past the point where $10 risk naturally rounds to
->=0.01 lots. Either is fine -- just needs to be a deliberate choice, not
-an accidental one like this was.
+**Also found while investigating:** `goldscalper/backtest.py`'s
+`BacktestConfig` defaults to `starting_equity=$10,000`, and every preset
+in this project was validated against that. The demo account was
+started at $1,000 -- 10x smaller than what was ever backtested. At $10k,
+1% risk is $100/trade, comfortably above GOLD's ~$70-90 typical stop
+distance; at $1k it's $10, which is *why* the min-lot floor kept biting.
+Decision: recreate the XM Global demo account at $10,000 to match the
+backtest exactly, rather than distorting `InpRiskPct` to compensate for
+an account size mismatch.
+
+**Added a startup sanity check** (`CheckAccountSizeVsRisk()`, runs once
+in `OnInit()`): computes the largest stop distance the current account
+can take without the min-lot floor pushing risk past
+`InpMaxRiskMultiple`, and compares it against a rough H1-ATR-based
+estimate of a typical stop distance (informational only -- real SL
+always comes from the signal file, this never duplicates the actual
+strategy logic). Logs a clear WARNING at EA attach time if the account
+looks too small for the instrument, instead of only finding out after a
+live trade. This is exactly the check that would have caught today's
+mismatch before the $1,000 account ever took a trade.
 
 ---
 

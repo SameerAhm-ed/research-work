@@ -28,18 +28,22 @@
 input string InpSignalFile   = "goldscalper_signal.csv";  // filename only -- FILE_COMMON supplies the folder
 input double InpRiskPct      = 0.01;                       // fraction of account equity risked per trade
 input double InpMaxRiskMultiple = 1.5;                     // abort entry if broker's min lot would force actual risk above InpRiskPct * this
+input double InpTypicalSlAtrMult = 3.0;                    // rough H1-ATR multiple used ONLY for the startup account-size sanity check -- actual SL always comes from the signal file
 input int    InpMagicNumber  = 20260729;
 input int    InpMaxSignalAgeMinutes = 90;                  // ignore a signal older than this (EA was offline?)
 input int    InpPollSeconds  = 5;                          // how often OnTimer re-checks the signal file/position
 
 CTrade trade;
 long   g_lastSignalId = -1;
+int    g_atrHandle = INVALID_HANDLE;
 
 int OnInit()
 {
    trade.SetExpertMagicNumber(InpMagicNumber);
    g_lastSignalId = (long)GlobalVariableGet2("gsc_last_signal_id", -1);
    EventSetTimer(InpPollSeconds);
+   g_atrHandle = iATR(_Symbol, PERIOD_H1, 14);
+   CheckAccountSizeVsRisk();
    Print("GoldScalperLiveEA initialized. Watching: ", InpSignalFile, " last processed signal_id=", g_lastSignalId);
    return(INIT_SUCCEEDED);
 }
@@ -47,6 +51,68 @@ int OnInit()
 void OnDeinit(const int reason)
 {
    EventKillTimer();
+   if(g_atrHandle != INVALID_HANDLE)
+      IndicatorRelease(g_atrHandle);
+}
+
+//+------------------------------------------------------------------+
+// Startup-only sanity check: this is what caught the Round 14 bug --  |
+// a $1,000 account with 1% risk simply can't afford GOLD's typical    |
+// stop distance at the broker's minimum lot, so every signal was      |
+// silently oversized instead of rejected. Warn about that mismatch    |
+// up front instead of waiting for a live trade to reveal it. Uses a   |
+// generic H1 ATR read purely to estimate a plausible stop distance --|
+// not the strategy's actual SL logic, which lives in Python and is   |
+// never duplicated here.                                              |
+//+------------------------------------------------------------------+
+void CheckAccountSizeVsRisk()
+{
+   double tickSize  = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+   double tickValue = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
+   double volMin    = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+   double equity    = AccountInfoDouble(ACCOUNT_EQUITY);
+
+   if(tickSize <= 0 || tickValue <= 0 || volMin <= 0)
+   {
+      Print("Startup sanity check: could not read symbol trade parameters for ", _Symbol, " -- skipping.");
+      return;
+   }
+
+   double maxSafeStopDistance = (equity * InpRiskPct * InpMaxRiskMultiple * tickSize) / (volMin * tickValue);
+
+   PrintFormat(
+      "Startup sanity check: equity=$%.2f, InpRiskPct=%.4f -> intended risk $%.2f/trade. "
+      "Broker min lot %.2f on %s means the largest stop distance this account can take without "
+      "exceeding InpMaxRiskMultiple=%.2f is ~$%.2f.",
+      equity, InpRiskPct, equity * InpRiskPct, volMin, _Symbol, InpMaxRiskMultiple, maxSafeStopDistance
+   );
+
+   double estimatedStopDistance = 0;
+   if(g_atrHandle != INVALID_HANDLE)
+   {
+      double atrBuf[];
+      if(CopyBuffer(g_atrHandle, 0, 1, 1, atrBuf) > 0)
+         estimatedStopDistance = atrBuf[0] * InpTypicalSlAtrMult;
+   }
+
+   if(estimatedStopDistance > 0)
+   {
+      PrintFormat(
+         "Rough estimate of a typical stop distance here (H1 ATR(14) x %.2f, informational only -- "
+         "actual SL always comes from the signal file): ~$%.2f.",
+         InpTypicalSlAtrMult, estimatedStopDistance
+      );
+
+      if(estimatedStopDistance > maxSafeStopDistance)
+         PrintFormat(
+            "WARNING: estimated typical stop distance ($%.2f) exceeds this account's safe max ($%.2f) -- "
+            "most or all signals are likely to be rejected by the InpMaxRiskMultiple guard until equity "
+            "grows or InpRiskPct is raised to match this account size.",
+            estimatedStopDistance, maxSafeStopDistance
+         );
+   }
+   else
+      Print("Startup sanity check: could not read ATR yet (indicator warming up) -- re-check the Journal shortly.");
 }
 
 void OnTick()
