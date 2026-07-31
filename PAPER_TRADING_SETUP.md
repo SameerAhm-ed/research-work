@@ -72,9 +72,18 @@ restarts it if it dies). It logs every check to
 3. Open a GOLD chart, timeframe doesn't matter (the EA runs on
    `OnTick`/`OnTimer`, not candle events).
 4. Drag the compiled EA onto the chart. In the inputs dialog:
-   - `InpSignalFile`: must match `--signal-file` from the Python side
-     (default `goldscalper_signal.csv`) -- **use the same working
-     directory** for both, or give the EA the full path.
+   - `InpSignalFile`: leave as the filename only (`goldscalper_signal.csv`)
+     -- the EA reads it via `FILE_COMMON`, which always resolves to
+     `%APPDATA%\MetaQuotes\Terminal\Common\Files\`, **not** your project
+     folder (MQL file functions can't reach outside the terminal's own
+     sandbox otherwise). This means the **Python side must write there
+     too** -- run it with the full path:
+     ```
+     py -3.12 scripts\live_signal_generator.py --symbol GOLD --preset trend_htf ^
+       --signal-file "C:\Users\<you>\AppData\Roaming\MetaQuotes\Terminal\Common\Files\goldscalper_signal.csv"
+     ```
+     (`--log-file` can stay wherever's convenient -- that one's just for
+     your own record, the EA never reads it.)
    - `InpRiskPct`: 0.01 matches the backtested config; change only if
      you deliberately want different sizing than what was validated.
    - Leave the rest at defaults unless you know why you're changing them.

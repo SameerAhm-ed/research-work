@@ -19,7 +19,13 @@
 #property strict
 #include <Trade\Trade.mqh>
 
-input string InpSignalFile   = "goldscalper_signal.csv";  // must match --signal-file from the Python side
+// Read via FILE_COMMON (see FileOpen call below), which always resolves to
+// the shared folder %APPDATA%\MetaQuotes\Terminal\Common\Files\ -- point
+// the Python side's --signal-file at the SAME path (not a project folder;
+// MQL file functions can't reach outside the terminal's own sandbox
+// without FILE_COMMON), e.g.:
+//   --signal-file "C:\Users\<you>\AppData\Roaming\MetaQuotes\Terminal\Common\Files\goldscalper_signal.csv"
+input string InpSignalFile   = "goldscalper_signal.csv";  // filename only -- FILE_COMMON supplies the folder
 input double InpRiskPct      = 0.01;                       // fraction of account equity risked per trade
 input int    InpMagicNumber  = 20260729;
 input int    InpMaxSignalAgeMinutes = 90;                  // ignore a signal older than this (EA was offline?)
@@ -84,7 +90,7 @@ bool HasOpenPosition()
 //+------------------------------------------------------------------+
 void CheckForNewSignal()
 {
-   int handle = FileOpen(InpSignalFile, FILE_READ | FILE_CSV | FILE_ANSI | FILE_SHARE_READ | FILE_SHARE_WRITE, ',');
+   int handle = FileOpen(InpSignalFile, FILE_READ | FILE_CSV | FILE_ANSI | FILE_COMMON | FILE_SHARE_READ | FILE_SHARE_WRITE, ',');
    if(handle == INVALID_HANDLE)
       return; // file may not exist yet -- not an error, just nothing to do
 
