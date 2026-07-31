@@ -27,6 +27,7 @@
 //   --signal-file "C:\Users\<you>\AppData\Roaming\MetaQuotes\Terminal\Common\Files\goldscalper_signal.csv"
 input string InpSignalFile   = "goldscalper_signal.csv";  // filename only -- FILE_COMMON supplies the folder
 input double InpRiskPct      = 0.01;                       // fraction of account equity risked per trade
+input double InpMaxRiskMultiple = 1.5;                     // abort entry if broker's min lot would force actual risk above InpRiskPct * this
 input int    InpMagicNumber  = 20260729;
 input int    InpMaxSignalAgeMinutes = 90;                  // ignore a signal older than this (EA was offline?)
 input int    InpPollSeconds  = 5;                          // how often OnTimer re-checks the signal file/position
@@ -186,11 +187,30 @@ void OpenTradeFromSignal(string direction, double slOffset, double tpOffset, dou
    double volMin  = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
    double volMax  = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
    double volStep = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+   double rawLots = lots;
    lots = MathFloor(lots / volStep) * volStep;
    lots = MathMax(volMin, MathMin(volMax, lots));
    if(lots <= 0)
    {
       Print("Computed lot size <= 0 (risk too small vs min lot) -- aborting entry.");
+      return;
+   }
+
+   // riskAmount above is the INTENDED risk. If the broker's minimum lot is
+   // bigger than what InpRiskPct actually calls for (small account, wide
+   // stop), lots gets clamped UP by MathMax(volMin, ...) and the REAL dollar
+   // risk on this trade can be far higher than intended -- silently, unless
+   // checked here. Compare actual vs intended before sending the order.
+   double actualRisk = lots * riskPerLot;
+   if(rawLots < volMin && actualRisk > riskAmount * InpMaxRiskMultiple)
+   {
+      PrintFormat(
+         "Aborting entry: broker min lot %.2f would force risk to $%.2f (%.1f%% of equity), "
+         "vs intended $%.2f (%.1f%% of equity) -- exceeds InpMaxRiskMultiple=%.2f. "
+         "Account is too small for this instrument's stop distance at InpRiskPct=%.4f.",
+         volMin, actualRisk, 100.0 * actualRisk / equity,
+         riskAmount, 100.0 * InpRiskPct, InpMaxRiskMultiple, InpRiskPct
+      );
       return;
    }
 
@@ -215,8 +235,13 @@ void OpenTradeFromSignal(string direction, double slOffset, double tpOffset, dou
 
    if(!ok)
       Print("Order failed: ", trade.ResultRetcodeDescription());
+   else if(rawLots < volMin)
+      PrintFormat(
+         "Opened %s %.2f lots on %s (min-lot clamped: intended risk $%.2f, ACTUAL risk $%.2f = %.1f%% of equity)",
+         direction, lots, _Symbol, riskAmount, actualRisk, 100.0 * actualRisk / equity
+      );
    else
-      Print("Opened ", direction, " ", lots, " lots on ", _Symbol, " (risk $", riskAmount, ")");
+      PrintFormat("Opened %s %.2f lots on %s (risk $%.2f)", direction, lots, _Symbol, actualRisk);
 }
 
 //+------------------------------------------------------------------+

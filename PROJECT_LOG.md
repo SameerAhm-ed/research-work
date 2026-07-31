@@ -5,6 +5,56 @@ reasoning behind decisions doesn't get lost. Newest entries at the top.
 
 ---
 
+## Round 14: first live demo trade caught a real position-sizing bug
+
+First actual trade went live on the XM Global GOLD demo account (Ticket
+2165264453, buy 0.01 lots, entry 4076.14, SL 4004.92, TP 4248.84). SL/TP
+price levels checked out exactly against the signal's offsets -- the
+entry/exit math was correct from day one. But the *sizing* wasn't:
+account balance $1,000, `InpRiskPct=0.01` should mean $10 risked, and
+the EA's log line said exactly that ("risk $10.0") -- except the actual
+trade risked roughly $71 (the full 4076.14-4004.92 stop distance times
+the 0.01-lot minimum), about 7x the intended amount.
+
+**Root cause:** `OpenTradeFromSignal()` computes `lots =
+riskAmount / riskPerLot` correctly, but GOLD's minimum tradeable lot
+(broker's `SYMBOL_VOLUME_MIN`, 0.01) is bigger than what $10 of risk at
+this stop distance calls for. The clamp `lots =
+MathMax(volMin, MathMin(volMax, lots))` silently rounds *up* to the
+broker minimum whenever the risk-based size would otherwise round down
+to zero -- and the actual dollar risk taken scales with that clamped
+lot size, not the intended one. The subsequent `Print()` reported the
+pre-clamp `riskAmount` ($10, what was *intended*), not what was actually
+risked, so the log itself was misleading: everything looked fine
+watching the Journal, but the account was carrying ~7% risk per trade
+instead of ~1%. This is exactly the failure mode paper-testing exists to
+catch -- a bug invisible in backtesting (position sizing isn't
+simulated the same way) and invisible in dry-run mode (no real lot
+clamping happens until an order is actually sized against a real
+account's broker limits).
+
+**Fix** (`mt_scripts/GoldScalperLiveEA.mq5`):
+1. `OpenTradeFromSignal()` now computes `actualRisk = lots * riskPerLot`
+   *after* clamping and logs that, not the pre-clamp intended amount --
+   the Journal log is now honest about what was actually risked.
+2. Added `InpMaxRiskMultiple` (default 1.5): if the broker's minimum lot
+   would force actual risk above `InpRiskPct * InpMaxRiskMultiple`, the
+   EA now aborts the entry with a clear explanation instead of silently
+   taking oversized risk. This is a real constraint on a $1,000 account
+   trading GOLD at these validated ATR multiples (~$70-90 typical stop
+   distances) -- it will legitimately skip some signals until the
+   account is larger or `InpRiskPct` is raised to match what 0.01 lots
+   actually costs at this stop distance. That's the correct behavior:
+   skipping a trade beats taking it at 7x the intended risk.
+
+**Not yet done:** decide whether to raise `InpRiskPct` to intentionally
+match the min-lot-driven risk on this account size, or wait until
+account equity grows past the point where $10 risk naturally rounds to
+>=0.01 lots. Either is fine -- just needs to be a deliberate choice, not
+an accidental one like this was.
+
+---
+
 ## Round 13: paper-trading infrastructure built (GOLD only, trend_htf)
 
 Moved from pure backtesting to live-adjacent infrastructure. Chose GOLD
