@@ -150,14 +150,17 @@ void CheckForNewSignal()
    OpenTradeFromSignal(bestDirection, bestSl, bestTp, bestTrailAct, bestTrailDist);
 }
 
-bool IsSignalStale(string generatedAtIso)
+bool IsSignalStale(string generatedAtEpoch)
 {
-   // generatedAtIso like "2026-07-29T14:03:11.123456+00:00" -- compare
-   // just the date+time portion against current UTC-ish server time.
-   datetime generated = StringToTime(StringSubstr(generatedAtIso, 0, 19));
+   // generatedAtEpoch is Unix epoch seconds (UTC) as a plain integer --
+   // not an ISO string. Deliberately not using StringToTime()/TimeCurrent()
+   // here: StringToTime() expects "YYYY.MM.DD HH:MM:SS", not ISO 8601, and
+   // TimeCurrent() is broker SERVER time, not UTC -- both would silently
+   // misjudge freshness. TimeGMT() is the true-UTC counterpart on this side.
+   long generated = StringToInteger(generatedAtEpoch);
    if(generated <= 0)
       return false; // couldn't parse -- don't block on a formatting hiccup
-   return (TimeCurrent() - generated) > InpMaxSignalAgeMinutes * 60;
+   return ((long)TimeGMT() - generated) > InpMaxSignalAgeMinutes * 60;
 }
 
 //+------------------------------------------------------------------+

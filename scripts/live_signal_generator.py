@@ -133,7 +133,12 @@ def run_once(symbol: str, preset_name: str, signal_path: Path, log_path: Path, d
     signal_id = read_last_signal_id(signal_path) + 1
     row = {
         "signal_id": signal_id,
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        # Unix epoch seconds (UTC), not an ISO string -- the EA compares
+        # this against TimeGMT(), and epoch-seconds sidesteps both a
+        # date-format parsing mismatch (MQL5's StringToTime wants
+        # "YYYY.MM.DD HH:MM:SS", not ISO 8601) and a timezone mismatch
+        # (MQL5's TimeCurrent() is broker server time, not UTC).
+        "generated_at": int(datetime.now(timezone.utc).timestamp()),
         "symbol": symbol,
         "direction": latest["direction"],
         "sl_offset": bt_cfg.sl_atr_mult * atr,
