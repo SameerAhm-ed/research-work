@@ -5,6 +5,65 @@ reasoning behind decisions doesn't get lost. Newest entries at the top.
 
 ---
 
+## Round 16: first automated regression test suite
+
+Explicit course correction: repeated conversations kept drifting toward
+balance/sizing analysis, but the actual ask was "build a solid system"
+first, independent of what balance eventually runs it. This round is
+purely that -- no balance, no live setup, just making the codebase
+itself harder to silently break.
+
+Before this round, every correctness claim in this log was verified by
+running a script once and reading the printed numbers by eye -- "Verified
+zero mismatches against the old per-bar logic before trusting it" (Round
+0), "Verified identical trade-for-trade output before trusting it"
+(Round 0), the M1 replay check (Round 12). None of that was locked in
+anywhere; a future refactor could silently reintroduce any of those bugs
+and nothing would notice until it caused another live incident. Added a
+real `pytest` suite (`tests/`, `conftest.py`, 37 tests) that encodes the
+properties that actually mattered so far:
+
+- **`test_mtf.py`**: direct no-lookahead proof for the H4 trend gate --
+  computing `trend_h4` on the full series vs. a truncated prefix must
+  agree everywhere both are defined, and a bar during an H4 candle must
+  only ever see the *previous* H4 candle's trend. This is the exact
+  correctness property multi-timeframe confirmation depends on (Round
+  8/9); it was previously just "reasoned through," never proven.
+- **`test_edge_score.py`**: `test_vectorized_features_match_bar_loop_reference_exactly`
+  directly re-does the Round 0 manual verification (fast vectorized
+  `compute_direction_features()` vs. the slow original `_bar_factors()`
+  bar-loop) as a permanent test, on both directions, all 8 factors.
+  Also covers the HTF gate blocking a high score against trend, and the
+  buy/sell tie-break rule.
+- **`test_backtest.py`**: no-lookahead entry fill (signal at bar i fills
+  at bar i+1's open, never bar i's own range), SL/TP hit PnL, spread
+  charged exactly once on the correct side, trailing stop only ever
+  tightens, the new `lot_step`/`lot_min` quantization from Round 15, and
+  a **golden regression test** against the real GOLD dataset that pins
+  `trend_htf`'s validated numbers (758 trades, +233.40% return, -9.94%
+  max drawdown) -- any future change to the backtester, edge score, or
+  indicators that moves these numbers now fails a test instead of
+  drifting silently. Skips gracefully where `data/gold_h1.csv` isn't
+  present (it's gitignored, real market data).
+- **`test_smc.py`** / **`test_indicators.py`** / **`test_data.py`**:
+  hand-crafted-input correctness checks (a 3-bar FVG that must be
+  detected with exact top/bottom/direction, ATR against hand-computed
+  True Range, RSI saturating correctly on monotonic series, the MT5
+  tab-separated `<ANGLE BRACKET>` CSV format) plus smoke tests on the
+  less safety-critical detectors (order blocks, liquidity sweeps,
+  structure breaks).
+
+All 37 pass, including the golden regression against real data. Added
+`pytest` to `requirements.txt` and a root `conftest.py` (the package
+isn't pip-installed, so tests need the repo root on `sys.path`).
+
+**Not done:** no CI wired up to run these automatically on push -- they
+only run when someone remembers to. No tests yet for `montecarlo.py`,
+`portfolio.py`, `fill_validation.py`, or `tune.py`. Worth circling back
+to.
+
+---
+
 ## Round 15: portfolio re-check + quantifying the lot-granularity gap
 
 Two pieces of offline work done in parallel while the live paper test
