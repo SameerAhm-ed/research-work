@@ -153,9 +153,18 @@ EURUSD_MTF_RULES = {"trend_h4": "4h"}
 # each at its normal full risk_pct on its own half of total capital (see
 # goldscalper/portfolio.py), measurably reduces drawdown versus either
 # alone -- genuine diversification, not just an average of the two legs.
-# Numbers need re-checking with the corrected configs above (the
-# combination check in Round 11 used the pre-fix, invalidated configs);
-# see PROJECT_LOG.md Round 12 for the current status.
+# Re-verified against the corrected (post-Round-12-fix) configs above:
+# $5,000/leg, 758 GOLD + 142 EURUSD trades, combined return +130.4%, max
+# drawdown -5.42% (vs GOLD alone's -9.94%), Sharpe 1.22, ending equity
+# $23,037 on $10,000 combined starting capital. Confirms the number
+# already quoted in EURUSD_WEIGHTS above was correct -- see
+# PROJECT_LOG.md Round 15 for details.
+#
+# See also Round 15 for BacktestConfig.lot_step/lot_min: below roughly
+# $10k-25k equity, GOLD's broker lot granularity (0.01-lot minimum)
+# measurably distorts these numbers away from what a real account of
+# that size would experience -- this portfolio's $5,000/leg is inside
+# that zone. See PROJECT_LOG.md for the actual sweep.
 
 
 # =============================================================================

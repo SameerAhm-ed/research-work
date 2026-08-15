@@ -5,6 +5,73 @@ reasoning behind decisions doesn't get lost. Newest entries at the top.
 
 ---
 
+## Round 15: portfolio re-check + quantifying the lot-granularity gap
+
+Two pieces of offline work done in parallel while the live paper test
+sits idle waiting on data (weekend market closure, terminal/script left
+running to prove out the uptime fix from Round 14).
+
+**1. Re-ran the GOLD+EURUSD combined portfolio** (`scripts/run_portfolio.py`)
+against the corrected, post-Round-12-fix presets -- `presets.py` had
+flagged this as stale since Round 11's check used the invalidated
+configs. Result: $5,000/leg, 758 GOLD + 142 EURUSD trades, combined
+return +130.4%, max drawdown -5.42% (vs GOLD alone's -9.94%), Sharpe
+1.22, ending equity $23,037 on $10,000 combined starting capital.
+Confirms genuine diversification survives the fix -- this matches the
+number already (correctly, as it turns out) quoted in the
+`EURUSD_WEIGHTS` comment block; only the separate, older "needs
+re-checking" note further down in the file was actually stale. Cleaned
+up both.
+
+**2. Built and ran a lot-size-granularity sweep.** The backtester
+(`goldscalper/backtest.py`) has always sized positions as a continuous
+real number (`units = risk_amount / stop_distance`) -- it never modeled
+a broker's minimum tradeable lot or lot-step rounding. That gap is
+exactly what caused the Round 14 live sizing bug and went unnoticed
+until a real trade hit it. Added optional `lot_step`/`lot_min` fields to
+`BacktestConfig` (default `None` -- fully opt-in, doesn't change any
+existing validated numbers) that quantize `units` the same way the live
+EA does: floor to the nearest step, clamp up to the minimum. For GOLD's
+standard 100oz contract, `units` in this codebase's PnL math already
+equals ounces directly (PnL = price_delta * units), so the broker's
+0.01-lot step/minimum maps to exactly 1 unit -- a clean, exact
+correspondence, not an approximation.
+
+Swept `TREND_HTF` full-dataset backtest across starting equity from
+$500 to $100,000, continuous vs. discrete sizing:
+
+| Equity | Continuous Return | Discrete Return | Continuous MaxDD | Discrete MaxDD |
+|---|---|---|---|---|
+| $500 | 233.4% | 484.7% | -9.94% | -27.51% |
+| $1,000 | 233.4% | 250.7% | -9.94% | -19.54% |
+| $1,170 (current live balance) | 233.4% | 214.7% | -9.94% | -18.67% |
+| $2,500 | 233.4% | 144.4% | -9.94% | -11.59% |
+| $5,000 | 233.4% | 180.6% | -9.94% | -8.69% |
+| $10,000 | 233.4% | 213.7% | -9.94% | -9.79% |
+| $25,000 | 233.4% | 226.3% | -9.94% | -9.73% |
+| $50,000 | 233.4% | 232.5% | -9.94% | -9.84% |
+| $100,000 | 233.4% | 232.2% | -9.94% | -9.91% |
+
+Two takeaways: (a) below roughly $10k-25k, lot-size rounding is not a
+small effect -- it adds real, unpredictable variance (both return and
+drawdown swing meaningfully away from the continuous baseline, in
+either direction depending on exactly where in the trade sequence
+equity crosses a rounding boundary), and (b) by $25k+ it's basically
+gone (<1pp drawdown difference). At the account's actual current
+balance (~$1,170), discrete-lot max drawdown is -18.67% vs. the
+backtested -9.94% -- essentially double. This is a quantified version of
+exactly the risk flagged qualitatively in the earlier live-trade
+discussion: a small account isn't running "the same strategy, smaller,"
+it's running a meaningfully higher-variance version of it because the
+broker's minimum lot doesn't shrink with the account.
+
+**Not acted on yet:** this doesn't change the decision already made (stay
+at the current balance) -- it just makes the tradeoff being accepted
+concrete and numeric instead of hand-wavy. Worth revisiting if/when the
+balance decision gets reconsidered.
+
+---
+
 ## Round 14: first live demo trade caught a real position-sizing bug
 
 First actual trade went live on the XM Global GOLD demo account (Ticket

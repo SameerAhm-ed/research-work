@@ -44,6 +44,17 @@ class BacktestConfig:
     vol_lookback: int = 100
     vol_ratio_max: float = 1.5
     vol_reduction_mult: float = 0.5
+    # Broker lot-size granularity. `units` here is directly in "dollars of
+    # PnL per $1 price move" (e.g. GOLD ounces), NOT lots -- left as None
+    # (the default) this stays continuous, exactly as always. Set both to
+    # model a real broker's rounding: units get floored to the nearest
+    # lot_step and clamped up to lot_min, mirroring the live EA's
+    # MathFloor(lots/volStep)*volStep + MathMax(volMin, ...) exactly. This
+    # is what actually caused the Round 14 live sizing bug -- a small
+    # account's risk-based size rounds up to lot_min, taking on more risk
+    # than risk_pct intends.
+    lot_step: float | None = None
+    lot_min: float | None = None
 
 
 def run_backtest(df: pd.DataFrame, scores: pd.DataFrame, cfg: BacktestConfig | None = None):
@@ -128,6 +139,9 @@ def run_backtest(df: pd.DataFrame, scores: pd.DataFrame, cfg: BacktestConfig | N
                         if atr_val / avg_atr > cfg.vol_ratio_max:
                             risk_amount *= cfg.vol_reduction_mult
                 units = risk_amount / stop_distance if stop_distance > 0 else 0.0
+                if units > 0 and cfg.lot_step and cfg.lot_min:
+                    units = math.floor(units / cfg.lot_step) * cfg.lot_step
+                    units = max(units, cfg.lot_min)
 
                 if units > 0:
                     has_position = True
