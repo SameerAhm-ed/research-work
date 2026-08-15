@@ -5,6 +5,57 @@ reasoning behind decisions doesn't get lost. Newest entries at the top.
 
 ---
 
+## Round 18: test coverage for fill_validation.py and tune.py
+
+Completes test coverage across every module in `goldscalper/` (73 tests
+total now). These two were the highest-value remaining targets, for a
+specific reason each -- not generic completeness:
+
+**`tests/test_fill_validation.py`** (10 tests): this is the module that
+actually caught Round 12's trailing-distance bug via M1 replay. If it
+had a subtle bug itself, it could report "no discrepancy" when there is
+one, or the reverse -- silently undermining every future M1 validation
+result, not just re-litigating Round 12. Covers TP/SL hit mechanics,
+spread charged on a sell's exit for both SL and TP (not just one),
+trailing stop mirroring backtest.py's never-loosens behavior, the
+`no_m1_data`/`ran_out_of_m1_data` edge cases, and `max_bars`. The one
+test worth calling out: `test_validate_trades_uses_atr_from_the_bar_
+before_entry_not_the_entry_bar` -- `validate_trades()` reads
+`h1_df["atr"].iloc[pos - 1]`, not `iloc[pos]`, because the ATR that
+actually sized the trade was read at signal time (the bar *before*
+entry), matching `backtest.py`'s pending-signal mechanics exactly. Easy
+to get backwards in a refactor and very easy for it to look fine in
+casual testing (both bars usually have similar ATR) -- proved correct
+here by giving the two bars deliberately wildly different ATR values and
+checking which one the replayed SL distance actually reflects. Also hit
+two test-construction mistakes while writing this (trade `exit_at` set
+outside the M1 window I'd provided, so `validate_trades`' own window
+filter correctly excluded them) -- not bugs in the code, bugs in my
+fixtures, fixed by keeping `exit_at` inside the provided M1 range.
+
+**`tests/test_tune.py`** (10 tests): this produced every number in
+`presets.py`. Covers `walk_forward_folds`' chronological-expanding-
+window property and non-overlapping test segments directly (not just
+trusting the docstring), including the edge case where a chunk boundary
+would produce a zero-width test segment (must be dropped, not returned
+as a degenerate fold) -- `walk_forward_folds(n_bars=3, n_folds=5)`.
+`sample_weights` summing exactly to budget, reproducibility given a
+fixed seed, and the anchor/concentration mechanism actually biasing the
+average composition toward the anchor (statistical check over 300
+samples) vs. staying roughly uniform when unanchored. `objective()`'s
+penalty ordering and formula. A `test_search_threshold_is_always_whole_
+valued` regression guard for the threshold knife-edge bug (Round 2) --
+weights are always integers, so the threshold must be too, or a
+continuous value a fraction of a point from an achievable integer sum
+can flip "approved" on arbitrary precision. Plus one end-to-end smoke
+test of `search()` on synthetic data (fast: 15 trials, 2 folds) checking
+output shape, descending sort, and that weight columns sum back to the
+budget.
+
+All 73 tests pass.
+
+---
+
 ## Round 17: test coverage for montecarlo.py and portfolio.py
 
 Continuing Round 16's line of work -- 16 more tests (53 total now).
