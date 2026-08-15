@@ -5,6 +5,43 @@ reasoning behind decisions doesn't get lost. Newest entries at the top.
 
 ---
 
+## Round 17: test coverage for montecarlo.py and portfolio.py
+
+Continuing Round 16's line of work -- 16 more tests (53 total now).
+
+**`tests/test_montecarlo.py`**: `compute_trade_returns` against a hand-
+computed pnl/equity-before fraction; `simulate_equity_path` compounding
+and drawdown by hand (100 -> +10% -> -20% -> +10% -> 96.8, max DD
+exactly -20%); a monotonic-gains path has exactly zero drawdown; empty
+input is neutral (0, not a crash). The most interesting one:
+`test_monte_carlo_shuffle_preserves_total_return_across_all_sims` checks
+a real mathematical property of the "shuffle" method that was never
+explicitly verified before -- compounding is commutative, so permuting
+the *order* of a fixed set of trade returns can only change the drawdown
+path, never the final equity. First attempt asserted exact equality
+(`nunique() == 1`) and failed: float multiplication isn't bit-for-bit
+commutative, so 200 shuffles landed on 3 distinct values differing by
+~1e-14. Not a bug -- fixed by asserting near-equality (std < 1e-9)
+instead of exact equality. Also covers: "resample" (with replacement)
+CAN vary both return and drawdown, unlike "shuffle"; reproducibility
+given a fixed seed; rejecting an unknown method; and `summarize()`'s
+percentile-rank and quantile math against a hand-built 5-row example.
+
+**`tests/test_portfolio.py`**: `combine_equity_curves` summing starting
+capital and per-leg PnL correctly; forward-filling a leg's gap (e.g. a
+holiday one instrument trades through and another doesn't) instead of
+treating the missing day as zero; a leg that hasn't started yet
+contributing exactly zero PnL (not NaN, not excluded) rather than
+breaking the combined series; daily resampling keeping the LAST
+intraday value, not the first; `portfolio_stats`' return/drawdown
+against hand computation, Sharpe against a manual daily-return
+calculation, and flat equity correctly producing NaN Sharpe (division by
+zero std) instead of crashing.
+
+All 53 tests pass.
+
+---
+
 ## Round 16: first automated regression test suite
 
 Explicit course correction: repeated conversations kept drifting toward
