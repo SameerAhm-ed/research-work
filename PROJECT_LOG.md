@@ -5,6 +5,57 @@ reasoning behind decisions doesn't get lost. Newest entries at the top.
 
 ---
 
+## Round 19: a corrupted signal row silently desynced the EA's parser
+
+Caught live, 2026-08-17. The Python log showed the same signal_id (#2)
+written twice from two different, valid H1 bars -- a real bug, fixed
+first by making `read_last_signal_id()` take `max()` over every row
+instead of trusting only the last one (self-heals the counter instead
+of repeating an ID). But that didn't explain the bigger symptom: several
+more valid buy signals got written afterward (including a properly
+incremented #3) and the EA opened nothing at all, on an account with no
+open position and no other apparent blocker.
+
+Had the user open the actual CSV file in Notepad, and found the real
+root cause: one row was missing its `signal_id` column entirely --
+8 values where 9 were expected, containing what were clearly genuine
+live-computed floats, not something hand-typed. Almost certainly caused
+by two instances of `live_signal_generator.py` running concurrently and
+racing to append to the same file, interleaving partial writes.
+
+**Why that one bad row broke everything after it, not just itself:**
+the EA's `CheckForNewSignal()` read the file as a flat stream of exactly
+9 `FileReadString()` calls per row, with no awareness of line
+boundaries. The instant one row was short by one field, the 9th read of
+that "row" silently pulled the first field of the *next* line instead --
+and every row after that was now permanently shifted by one column.
+Every subsequent valid signal (including #2 and #3) was being parsed
+with its fields in the wrong positions, so `bestSymbol`/`bestDirection`
+were garbage and nothing ever matched `_Symbol`/`"buy"`/`"sell"`
+correctly again for the rest of that file.
+
+**Fixed on both sides:**
+- `GoldScalperLiveEA.mq5`: `CheckForNewSignal()` now tracks
+  `FileIsLineEnding()` while reading each row's fields. A row with the
+  wrong field count (short or long) is detected, logged, and skipped by
+  advancing to the next actual line boundary -- containing the damage to
+  that one row instead of cascading through the rest of the file.
+- `live_signal_generator.py`: `read_last_signal_id()` now also skips any
+  row where `DictReader` reports a missing or extra field (`None` in an
+  expected column, or a populated `restkey`) before computing `max()`,
+  so a malformed row can't get misread as a huge, valid-looking
+  `signal_id` and poison the counter going forward. Verified directly
+  against the actual corrupted file content from this incident.
+
+**Not yet done:** the real fix for the likely root cause (two script
+instances racing on the same file) is operational, not code -- run
+exactly one instance of `live_signal_generator.py` at a time. Worth
+adding a lightweight lock file if this recurs, but the EA-side parser
+hardening means even a repeat of this exact corruption can no longer
+cascade past the one bad row.
+
+---
+
 ## Round 18: test coverage for fill_validation.py and tune.py
 
 Completes test coverage across every module in `goldscalper/` (73 tests

@@ -172,15 +172,43 @@ void CheckForNewSignal()
 
    while(!FileIsEnding(handle))
    {
-      long   signalId      = (long)StringToInteger(FileReadString(handle));
-      string generatedAt   = FileReadString(handle);
-      string symbol        = FileReadString(handle);
-      string direction     = FileReadString(handle);
-      double slOffset      = StringToDouble(FileReadString(handle));
-      double tpOffset      = StringToDouble(FileReadString(handle));
-      double trailActOffset= StringToDouble(FileReadString(handle));
-      double trailDistOffset=StringToDouble(FileReadString(handle));
-      FileReadString(handle); // edge_score, unused here
+      // Read exactly 9 fields, but track line boundaries as we go -- a
+      // row with the wrong field count (seen live on 2026-08-17: a race
+      // between two script instances writing the file concurrently
+      // produced a row missing its signal_id column) would otherwise make
+      // FileReadString() silently borrow tokens from the NEXT line to
+      // finish this "row", permanently shifting every field for every
+      // row after it. Detect that instead of trusting a fixed read count.
+      string fields[9];
+      int fieldCount = 0;
+      for(int f = 0; f < 9; f++)
+      {
+         if(FileIsEnding(handle))
+            break;
+         fields[f] = FileReadString(handle);
+         fieldCount++;
+         if(f < 8 && FileIsLineEnding(handle))
+            break; // line ended early -- short row
+      }
+
+      bool wellFormed = (fieldCount == 9) && (FileIsLineEnding(handle) || FileIsEnding(handle));
+      if(!wellFormed)
+      {
+         Print("Malformed row in signal file (expected 9 fields, got ", fieldCount, ") -- skipping to next line, this row ignored.");
+         while(!FileIsLineEnding(handle) && !FileIsEnding(handle))
+            FileReadString(handle);
+         continue;
+      }
+
+      long   signalId       = (long)StringToInteger(fields[0]);
+      string generatedAt    = fields[1];
+      string symbol         = fields[2];
+      string direction      = fields[3];
+      double slOffset       = StringToDouble(fields[4]);
+      double tpOffset       = StringToDouble(fields[5]);
+      double trailActOffset = StringToDouble(fields[6]);
+      double trailDistOffset= StringToDouble(fields[7]);
+      // fields[8] = edge_score, unused here
 
       if(signalId > g_lastSignalId && signalId > bestId)
       {

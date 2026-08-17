@@ -97,11 +97,24 @@ def read_last_signal_id(signal_path: Path) -> int:
         return -1
     # max(), not rows[-1] -- trusting only the last row broke on 2026-08-17:
     # two consecutive runs both computed signal_id=2 (the second write should
-    # have read back the first one and produced 3). Root cause wasn't fully
-    # pinned down live, but max() over every row is strictly more robust to
-    # any duplicate/out-of-order row regardless of cause, and self-heals the
-    # counter on the next run instead of repeating the same ID.
-    return max(int(row["signal_id"]) for row in rows)
+    # have read back the first one and produced 3), most likely from two
+    # script instances racing to append to the same file concurrently. That
+    # same race also produced a genuinely malformed row (missing its
+    # signal_id column entirely, shifting every field one column over) --
+    # DictReader fills a short row's missing trailing keys with None, so
+    # skip any row that isn't a clean 9-field match instead of letting a
+    # garbled field (e.g. a stray float parsed as a huge "signal_id") poison
+    # the counter. max() over what's left self-heals the counter going
+    # forward regardless of what junk is sitting earlier in the file.
+    valid_ids = []
+    for row in rows:
+        if any(row.get(col) is None for col in SIGNAL_COLUMNS) or row.get(None) is not None:
+            continue  # short row (missing trailing fields) or long row (extra fields)
+        try:
+            valid_ids.append(int(row["signal_id"]))
+        except ValueError:
+            continue  # signal_id field itself wasn't a clean integer
+    return max(valid_ids) if valid_ids else -1
 
 
 def append_signal(signal_path: Path, row: dict) -> None:
