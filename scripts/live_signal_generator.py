@@ -93,7 +93,15 @@ def read_last_signal_id(signal_path: Path) -> int:
         return -1
     with open(signal_path, newline="") as f:
         rows = list(csv.DictReader(f))
-    return int(rows[-1]["signal_id"]) if rows else -1
+    if not rows:
+        return -1
+    # max(), not rows[-1] -- trusting only the last row broke on 2026-08-17:
+    # two consecutive runs both computed signal_id=2 (the second write should
+    # have read back the first one and produced 3). Root cause wasn't fully
+    # pinned down live, but max() over every row is strictly more robust to
+    # any duplicate/out-of-order row regardless of cause, and self-heals the
+    # counter on the next run instead of repeating the same ID.
+    return max(int(row["signal_id"]) for row in rows)
 
 
 def append_signal(signal_path: Path, row: dict) -> None:
