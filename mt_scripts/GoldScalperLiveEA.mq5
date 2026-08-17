@@ -37,10 +37,33 @@ CTrade trade;
 long   g_lastSignalId = -1;
 int    g_atrHandle = INVALID_HANDLE;
 
+// Real signal_id values are a small sequential counter (0, 1, 2, ...) --
+// nowhere near this even after years of hourly signals. Anything above it
+// can only be a parsing artifact (seen live 2026-08-17: a corrupted CSV
+// row shifted fields, so a generated_at EPOCH TIMESTAMP got read as
+// signal_id -- a huge number that then "won" as the highest ID ever seen
+// and got persisted to the gsc_last_signal_id global variable, silently
+// blocking every real signal forever afterward, even across recompiles,
+// since MT5 global variables survive EA reloads). Treated as implausible
+// and discarded wherever a signal_id is read, so this failure mode can't
+// permanently wedge the EA again.
+#define MAX_PLAUSIBLE_SIGNAL_ID 1000000
+
 int OnInit()
 {
    trade.SetExpertMagicNumber(InpMagicNumber);
    g_lastSignalId = (long)GlobalVariableGet2("gsc_last_signal_id", -1);
+   if(g_lastSignalId > MAX_PLAUSIBLE_SIGNAL_ID)
+   {
+      PrintFormat(
+         "Stored last-signal-id (%I64d) is implausibly large -- almost certainly a leftover "
+         "parsing artifact from a past corrupted signal file, not a real ID. Resetting to -1 "
+         "so real signals aren't blocked forever.",
+         g_lastSignalId
+      );
+      g_lastSignalId = -1;
+      GlobalVariableSet("gsc_last_signal_id", -1.0);
+   }
    EventSetTimer(InpPollSeconds);
    g_atrHandle = iATR(_Symbol, PERIOD_H1, 14);
    CheckAccountSizeVsRisk();
@@ -201,6 +224,11 @@ void CheckForNewSignal()
       }
 
       long   signalId       = (long)StringToInteger(fields[0]);
+      if(signalId > MAX_PLAUSIBLE_SIGNAL_ID)
+      {
+         Print("signal_id field (", signalId, ") is implausibly large -- treating this row as corrupt, ignoring it.");
+         continue;
+      }
       string generatedAt    = fields[1];
       string symbol         = fields[2];
       string direction      = fields[3];

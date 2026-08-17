@@ -5,6 +5,53 @@ reasoning behind decisions doesn't get lost. Newest entries at the top.
 
 ---
 
+## Round 20: the corruption's damage outlived the fix that stopped it
+
+Immediately after pulling Round 19's parser fix, recompiling, and
+reattaching -- still no trade, on a fresh, clean signal file with
+multiple valid approved buy signals sitting in it. Journal showed why:
+`GoldScalperLiveEA initialized... last processed signal_id=1786968010`.
+That's not a small sequential counter, it's a number that looks exactly
+like a Unix timestamp -- because it is one. Before the Round 19 fix
+existed, the OLD EA hit the corrupted row, and the field-shift bug made
+it read what should have been `generated_at` (an epoch timestamp) as
+`signal_id`. Being numerically enormous, it "won" as the highest ID ever
+seen and got written to the `gsc_last_signal_id` MT5 global variable --
+which **persists across recompiling and reattaching the EA**, since
+global variables live at the terminal level, not the EA instance. Fixing
+the parser stopped new corruption; it did nothing about this old,
+already-poisoned memory. Every real signal from here on (0, 1, 2, 3...)
+would forever be smaller than 1,786,968,010 and get silently ignored --
+permanently, until someone noticed.
+
+**Fixed defense-in-depth, not just patched the one value:** added
+`MAX_PLAUSIBLE_SIGNAL_ID` (1,000,000 -- real IDs won't approach that for
+centuries at any realistic signal rate). Applied in two places: `OnInit()`
+now resets `g_lastSignalId` (and the persisted global variable) back to
+-1 if the stored value exceeds this bound, logging why; and
+`CheckForNewSignal()` now discards any candidate row whose `signal_id`
+exceeds it, so an implausible value can never win the "best candidate"
+comparison in the first place, regardless of where it came from. This
+makes the EA self-healing on its next restart if this exact failure mode
+(or anything producing an absurdly large ID) ever recurs, instead of
+requiring someone to notice and manually clear the global variable via
+MT5's Global Variables window (Ctrl+F3) -- which remains the immediate,
+faster fix for right now, before this new code is even compiled in.
+
+**Separately, surfaced by the same Journal output:** the account-size
+sanity check (Round 14) is now firing for real -- `WARNING: estimated
+typical stop distance ($44.58) exceeds this account's safe max ($17.55)`.
+This is the balance-vs-risk-guard tradeoff already discussed and
+accepted (staying at ~$1,170 instead of moving to $10k) showing up in
+practice for the first time: at this balance, the Round 14 oversized-risk
+guard will reject most or all real signals unless `InpRiskPct` is
+deliberately raised to match what the broker's minimum lot actually
+costs here (~4-5%, given a ~$44.58 typical stop against $1,170.32
+equity). Not a new bug -- the expected, already-understood consequence of
+a decision made earlier, just now visibly landing.
+
+---
+
 ## Round 19: a corrupted signal row silently desynced the EA's parser
 
 Caught live, 2026-08-17. The Python log showed the same signal_id (#2)
